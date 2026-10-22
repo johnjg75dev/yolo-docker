@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Optical Modem — screen ↔ camera data link</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121924; --panel2:#0f1620; --line:#22303f;
+    --txt:#e6edf3; --dim:#8fa3b8; --acc:#39d98a; --acc2:#4aa8ff; --warn:#ffb020; --bad:#ff5d5d;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 20% -10%,#16233a 0%,var(--bg) 60%);
+       color:var(--txt);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line);
+         background:rgba(9,13,19,.75);backdrop-filter:blur(8px);position:sticky;top:0;z-index:5}
+  header h1{font-size:16px;margin:0;letter-spacing:.2px}
+  header .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:2px 7px;border-radius:999px}
+  .pill{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+  .pill.ok{color:#0b0f14;background:var(--acc);border-color:var(--acc);font-weight:600}
+  .pill.off{color:var(--dim)}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px;max-width:1500px;margin:0 auto}
+  @media (max-width:1000px){main{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
+        border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+  .card h2{font-size:13px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.12em;color:var(--dim)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  label{font-size:12px;color:var(--dim)}
+  select,input,textarea,button{font:inherit;color:var(--txt);background:#0c131b;border:1px solid var(--line);
+        border-radius:9px;padding:7px 9px;outline:none}
+  textarea{width:100%;min-height:64px;resize:vertical;font-family:var(--mono);font-size:12px}
+  button{cursor:pointer;background:#16favour}
+  button{background:#182637;border-color:#2a3d52}
+  button:hover{border-color:var(--acc2)}
+  button.primary{background:linear-gradient(180deg,#2ad07f,#1aa864);color:#05130c;border-color:#28c47a;font-weight:650}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  canvas{width:100%;border-radius:12px;background:#000;border:1px solid var(--line);display:block}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:12px;font-family:var(--mono)}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .mono{font-family:var(--mono);font-size:12px}
+  .log{height:120px;overflow:auto;background:#080d12;border:1px solid var(--line);border-radius:10px;
+       padding:8px;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap}
+  .ok{color:var(--acc)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  .statrow{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;margin-top:8px}
+  .bar{height:6px;border-radius:4px;background:#0a1017;overflow:hidden;border:1px solid var(--line)}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,#1aa864,#39d98a)}
+  .hint{font-size:11.5px;color:var(--dim)}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}
+  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500}
+  .swatch{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;
+          border:1px solid #000}
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tabs button{padding:5px 10px;border-radius:999px;font-size:12px}
+  .tabs button.active{background:#1d3a54;border-color:#3f7fb0;color:#cfe8ff}
+</style>
+</head>
+<body>
+<header>
+  <h1>Optical Modem</h1>
+  <span class="tag">screen → camera → YOLO26 → FEC</span>
+  <span id="health" class="pill off">checking…</span>
+  <span id="model" class="pill off">model: —</span>
+  <span style="margin-left:auto" class="hint" id="clock"></span>
+</header>
+
+<main>
+  <!-- ================= TRANSMITTER ================= -->
+  <section class="card">
+    <h2>1 · Transmitter</h2>
+    <div class="grid2">
+      <div>
+        <label>Message</label>
+        <textarea id="msg">The quick brown fox jumps over the lazy dog. Optical modem demo frame.</textarea>
+        <div class="row" style="margin-top:8px">
+          <label>Modulation</label>
+          <select id="tx_mod">
+            <option value="rgb32t16">rgb32t16 — 32 c × 16 patterns (9 bit)</option>
+            <option value="rgb32t4">rgb32t4 — 32 colours × 4 patterns (7 bit)</option>
+            <option value="rgb32" selected>rgb32 — 32 colours (5 bit)</option>
+            <option value="rgb32dp">rgb32dp — 32 colours, hue+180 pairs</option>
+            <option value="rgb16t4">rgb16t4 — 16 colours × 4 patterns (6 bit)</option>
+            <option value="rgb16t4dp">rgb16t4dp — 16 colours × 4 patterns, pairs</option>
+            <option value="rgb16">rgb16 — 16 hues</option>
+            <option value="rgb16dp">rgb16dp — 16 hues, hue+180 pairs</option>
+            <option value="rgb8t4">rgb8t4 — 8 colours × 4 patterns (5 bit)</option>
+            <option value="rgb8">rgb8 — 8 colours (3 bit)</option>
+            <option value="rgb8x2">rgb8x2 — 8 colours × 2 levels</option>
+            <option value="gray4">gray4 — 2 bit intensity</option>
+            <option value="gray2">gray2 — 1 bit intensity</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>ECC</label>
+          <select id="tx_ecc">
+            <option value="rs8">RS(8) light</option>
+            <option value="rs16" selected>RS(16) balanced</option>
+            <option value="rs32">RS(32) heavy</option>
+            <option value="rs64">RS(64) very heavy</option>
+            <option value="ldpc12">LDPC 1/2</option>
+            <option value="ldpc23">LDPC 2/3</option>
+            <option value="none">none (baseline)</option>
+          </select>
+          <label>Grid</label>
+          <select id="tx_grid">
+            <option value="">auto (fit display)</option>
+            <option>32</option><option>40</option><option>48</option>
+            <option>64</option><option>84</option><option>96</option><option>114</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Display</label>
+          <select id="tx_res">
+            <option value="1920x1080" selected>1920×1080 (Full HD)</option>
+            <option value="1280x720">1280×720 (HD)</option>
+            <option value="2560x1440">2560×1440 (QHD)</option>
+            <option value="3840x2160">3840×2160 (4K)</option>
+            <option value="frame">square frame (no screen)</option>
+          </select>
+          <label>Symbol px</label>
+          <select id="tx_cellpx">
+            <option>8</option><option>10</option><option selected>12</option>
+            <option>14</option><option>16</option><option>20</option><option>24</option>
+          </select>
+        </div>
+        <div class="row">
+          <button class="primary" id="btn_build">Build frames</button>
+          <button id="btn_play">▶ Play</button>
+          <button id="btn_pause">⏸</button>
+        </div>
+      </div>
+      <div>
+        <label>Display (what the screen shows)</label>
+        <canvas id="tx_canvas" width="360" height="360"></canvas>
+        <div class="statrow">
+          <span id="tx_stats" class="dim">—</span>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Simulate camera</label>
+      <input id="tx_level" type="range" min="0" max="1.4" step="0.05" value="0.6" style="flex:1;min-width:120px">
+      <span class="mono" id="tx_level_v">0.60</span>
+      <button id="btn_sim">📷 Capture &amp; decode</button>
+    </div>
+    <div class="hint">This runs the real transmitter → simulated camera → YOLO26 → demodulator → FEC chain on the server.</div>
+  </section>
+
+  <!-- ================= RECEIVER ================= -->
+  <section class="card">
+    <h2>2 · Receiver</h2>
+    <div class="row">
+      <button class="primary" id="btn_cam">Start camera</button>
+      <button id="btn_stop">Stop</button>
+      <label>Detector</label>
+      <select id="rx_mode">
+        <option value="auto" selected>auto (YOLO26 + contours)</option>
+        <option value="yolo">YOLO26 only</option>
+        <option value="classical">classical only</option>
+      </select>
+      <label>Every</label>
+      <select id="rx_every"><option>250</option><option selected>500</option><option>1000</option></select>
+      <span class="hint">ms</span>
+    </div>
+    <div class="grid2">
+      <div>
+        <label>Camera / uploaded capture</label>
+        <canvas id="rx_canvas" width="360" height="270"></canvas>
+      </div>
+      <div>
+        <label>Detection overlay</label>
+        <canvas id="ov_canvas" width="360" height="270"></canvas>
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="file" id="file_in" accept="image/*" style="max-width:210px">
+      <button id="btn_upload">Decode upload</button>
+    </div>
+    <div class="statrow">
+      <span id="rx_status" class="dim">idle</span>
+      <span id="rx_time" class="mono dim"></span>
+    </div>
+    <label style="display:block;margin-top:8px">Decoded payload</label>
+    <div class="log" id="rx_payload">—</div>
+    <div class="statrow" id="rx_meta"></div>
+  </section>
+
+  <!-- ================= PROTOCOL ================= -->
+  <section class="card">
+    <h2>3 · Protocol &amp; capacity</h2>
+    <div class="tabs">
+      <button class="active" data-tab="cap">Capacity</button>
+      <button data-tab="pal">Palette</button>
+      <button data-tab="bench">Benchmark</button>
+    </div>
+    <div id="tab_cap">
+      <table id="cap_table"><thead><tr><th>modulation</th><th>ecc</th><th>bits/cell</th><th>bytes/frame</th><th>frame px</th></tr></thead><tbody></tbody></table>
+      <div class="hint" style="margin-top:8px">Frame = calibration ring + RS-protected header + payload (CRC16 + FEC + interleaving).</div>
+    </div>
+    <div id="tab_pal" style="display:none">
+      <div id="palette_box"></div>
+      <div class="hint" style="margin-top:8px">Palette points are labelled with Gray/Hamming-minimal bit patterns, so a neighbouring-colour confusion costs one bit, not three.</div>
+    </div>
+    <div id="tab_bench" style="display:none">
+      <div class="row">
+        <label>Modes</label>
+        <select id="bench_mode"><option value="classical">classical</option><option value="yolo">yolo</option><option value="classical,yolo" selected>both</option></select>
+        <label>n</label><select id="bench_n"><option>3</option><option selected>5</option></select>
+        <button id="btn_bench">Run</button>
+      </div>
+      <div id="bench_out" class="log" style="height:200px">—</div>
+    </div>
+  </section>
+
+  <!-- ================= LOG / SPEC ================= -->
+  <section class="card">
+    <h2>4 · Activity log</h2>
+    <div class="log" id="log" style="height:290px"></div>
+    <div class="row" style="margin-top:10px">
+      <span class="hint">Pipeline: render → camera channel → localise (YOLO26 / contours) → align → calibrate on ring → demodulate (LLR) → de-interleave → FEC → CRC → payload</span>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
+function log(msg, cls=''){
+  const t = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.innerHTML = `<span class="dim">${t}</span> <span class="${cls}">${msg}</span>`;
+  logEl.appendChild(line); logEl.scrollTop = logEl.scrollHeight;
+}
+async function post(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!r.ok) throw new Error(url+' -> '+r.status);
+  return await r.json();
+}
+setInterval(()=>{$('#clock').textContent = new Date().toLocaleTimeString();}, 1000);
+
+/* ---------- health ---------- */
+(async ()=>{
+  try{
+    const h = await (await fetch('/api/health')).json();
+    $('#health').textContent = 'server online · OpenCV ' + h.opencv + (h.ultralytics? ' · ultralytics '+h.ultralytics : '');
+    $('#health').className = 'pill ok';
+    if(h.yolo){ $('#model').textContent = 'YOLO26 weights loaded'; $('#model').className='pill ok'; }
+    else { $('#model').textContent = 'YOLO weights not found (classical only)'; }
+    if(h.model_card && h.model_card.results){
+      const r = h.model_card.results;
+      log('model card: box mAP50-95 ' + (r.box_map50_95||0).toFixed(3) + ', pose mAP50-95 ' + (r.pose_map50_95||0).toFixed(3), 'dim');
+    }
+  }catch(e){ $('#health').textContent='server offline'; log('health check failed: '+e.message,'bad'); }
+})();
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tabs button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    for(const t of ['cap','pal','bench']) $('#tab_'+t).style.display = (t===b.dataset.tab)? 'block':'none';
+  };
+});
+
+/* ---------- config / capacity ---------- */
+let CATALOG=null;
+(async ()=>{
+  try{
+    CATALOG = await (await fetch('/api/config')).json();
+    const body = $('#cap_table tbody'); body.innerHTML='';
+    for(const [k,v] of Object.entries(CATALOG.matrix)){
+      const [mod,ecc]=k.split('|');
+      if(!['rgb8','rgb8x2','gray4','gray2'].includes(mod)) continue;
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${mod}</td><td>${ecc}</td><td>${v.bits_per_cell}</td><td>${v.max_user_payload}</td><td>${v.frame_px}</td>`;
+      body.appendChild(tr);
+    }
+  }catch(e){ log('config load failed: '+e.message,'bad'); }
+})();
+
+/* palette preview mirrors optical_modem/config.py */
+const PALETTES = {
+  rgb8: [[80,80,80],[80,80,200],[80,200,80],[80,200,200],[200,80,80],[200,80,200],[200,200,80],[200,200,200]],
+  rgb8x2: 'composite',
+  gray4: [[64,64,64],[112,112,112],[160,160,160],[208,208,208]],
+  gray2: [[64,64,64],[208,208,208]]
+};
+(function palette(){
+  const box = $('#palette_box'); let html='';
+  for(const [name,pal] of Object.entries(PALETTES)){
+    html += `<div style="margin-bottom:10px"><div class="mono dim">${name}</div>`;
+    if(pal==='composite'){ html += '<div class="hint">rgb8x2 = 8 colours × 2 brightness levels (composite modulation)</div>'; }
+    else{
+      pal.forEach((c,i)=>{ html += `<span class="swatch" style="background:rgb(${c[0]},${c[1]},${c[2]})"></span>`; });
+      html += `<span class="mono dim">&nbsp;${pal.length} symbols</span>`;
+    }
+    html += '</div>';
+  }
+  box.innerHTML = html;
+})();
+
+/* ---------- transmitter ---------- */
+function txParams(){
+  const grid = $('#tx_grid').value;
+  return {
+    modulation: $('#tx_mod').value,
+    ecc: $('#tx_ecc').value,
+    grid: grid ? parseInt(grid) : null,
+    cell_px: parseInt($('#tx_cellpx').value),
+    resolution: $('#tx_res').value,
+  };
+}
+let txFrames=[], txIdx=0, txTimer=null;
+const txCanvas = $('#tx_canvas'), txCtx = txCanvas.getContext('2d');
+function drawTx(){
+  if(!txFrames.length) return;
+  const img = new Image();
+  img.onload = ()=>{
+    txCanvas.width = img.width; txCanvas.height = img.height;
+    txCtx.drawImage(img,0,0);
+  };
+  img.src = 'data:image/png;base64,' + txFrames[txIdx % txFrames.length];
+  $('#tx_stats').textContent = `frame ${(txIdx % txFrames.length)+1}/${txFrames.length}`;
+}
+async function buildFrames(){
+  const body = txParams(); body.text = $('#msg').value;
+  $('#btn_build').disabled = true;
+  try{
+    const r = await post('/api/frames', body);
+    txFrames = r.frames.map(f=>f.png);
+    txIdx = 0; drawTx();
+    const c = r.capacity;
+    const disp = c.display ? ` on ${c.display.width}×${c.display.height}` : '';
+    log(`built ${r.count} frame(s): ${c.modulation}/${c.ecc}, ${c.bits_per_cell} bit/cell, ` +
+        `${c.colors} colours × ${c.patterns} pattern(s)${c.pair ? ', hue pairs' : ''}, ` +
+        `${c.cells}×${c.cells} cells @ ${c.cell_px}px${disp}, ` +
+        `${c.max_user_payload} B/frame, ${r.warmup_ms} ms`, 'ok');
+    $('#tx_stats').textContent = `${r.count} frames · ${c.max_user_payload} B/frame`;
+  }catch(e){ log('build failed: '+e.message, 'bad'); }
+  $('#btn_build').disabled = false;
+}
+$('#btn_build').onclick = buildFrames;
+$('#btn_play').onclick = ()=>{ if(txTimer) clearInterval(txTimer); txTimer=setInterval(()=>{txIdx++; drawTx();}, 250); };
+$('#btn_pause').onclick = ()=>{ if(txTimer){clearInterval(txTimer); txTimer=null;} };
+$('#tx_level').oninput = e => { $('#tx_level_v').textContent = parseFloat(e.target.value).toFixed(2); };
+
+$('#btn_sim').onclick = async ()=>{
+  $('#btn_sim').disabled = true;
+  try{
+    const r = await post('/api/simulate', Object.assign(txParams(), {
+      text: $('#msg').value, level: parseFloat($('#tx_level').value),
+      mode: $('#rx_mode').value
+    }));
+    showCapture(r.capture_png, r.overlay_png);
+    reportResult(r, 'simulated capture');
+  }catch(e){ log('simulate failed: '+e.message,'bad'); }
+  $('#btn_sim').disabled = false;
+};
+
+/* ---------- receiver ---------- */
+let stream=null, camTimer=null;
+const rxCanvas = $('#rx_canvas'), rxCtx = rxCanvas.getContext('2d');
+const ovCanvas = $('#ov_canvas'), ovCtx = ovCanvas.getContext('2d');
+function showCapture(b64, overlay){
+  const img = new Image();
+  img.onload = ()=>{ rxCanvas.width=img.width; rxCanvas.height=img.height; rxCtx.drawImage(img,0,0); };
+  img.src = 'data:image/png;base64,'+b64;
+  if(overlay){
+    const o = new Image();
+    o.onload = ()=>{ ovCanvas.width=o.width; ovCanvas.height=o.height; ovCtx.drawImage(o,0,0); };
+    o.src = 'data:image/png;base64,'+overlay;
+  }
+}
+function reportResult(r, source){
+  const t = r.timings_ms || {};
+  $('#rx_time').textContent = Object.entries(t).map(([k,v])=>`${k}:${v}ms`).join('  ');
+  if(r.ok){
+    $('#rx_status').className='ok';
+    $('#rx_status').textContent = `decoded ✓ (${source})`;
+    let text = r.payload_text;
+    if(!text) text = atob(r.payload_b64);
+    $('#rx_payload').textContent = text;
+    const b = (r.results && r.results[0]) || {};
+    $('#rx_meta').innerHTML = `<span class="ok">mod ${b.modulation}</span>`+
+      `<span class="dim">ecc ${b.ecc}</span>`+
+      `<span class="dim">ring ${b.ring_score}</span>`+
+      `<span class="dim">quality ${b.quality}</span>`+
+      `<span class="dim">corrected ${b.n_corrected} B</span>`+
+      `<span class="dim">rot ${b.rotation}</span>`;
+    log(`RX ok: ${b.modulation}/${b.ecc}, ring ${b.ring_score}, ${r.payload_b64.length} B payload, dets ${r.detections.length}`, 'ok');
+  } else {
+    $('#rx_status').className='bad';
+    $('#rx_status').textContent = `no frame decoded (${source})`;
+    const b = (r.results && r.results[0]) || {};
+    $('#rx_meta').innerHTML = Object.entries(b).slice(0,5).map(([k,v])=>`<span class="dim">${k}: ${v}</span>`).join('');
+    log(`RX failed (${source}); detections: ${r.detections.length}, reason: ${b.reason || 'n/a'}`, 'warn');
+  }
+}
+async function captureAndDecode(){
+  if(!stream) return;
+  const w = 640, h = Math.round(640 * rxCanvas.height / rxCanvas.width) || 480;
+  const tmp = document.createElement('canvas'); tmp.width=w; tmp.height=h;
+  tmp.getContext('2d').drawImage(rxCanvas,0,0,w,h);
+  const data = tmp.toDataURL('image/jpeg', 0.9);
+  try{
+    const r = await post('/api/decode', Object.assign(txParams(), {
+      image:data, mode:$('#rx_mode').value
+    }));
+    showCapture(data, r.overlay_png);
+    reportResult(r, 'camera');
+  }catch(e){ log('decode error: '+e.message,'bad'); }
+}
+$('#btn_cam').onclick = async ()=>{
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280}}});
+    const v = document.createElement('video'); v.srcObject=stream; v.playsInline=true; await v.play();
+    rxCanvas.width = v.videoWidth || 640; rxCanvas.height = v.videoHeight || 480;
+    const pump = ()=>{ rxCtx.drawImage(v,0,0,rxCanvas.width,rxCanvas.height); requestAnimationFrame(pump); };
+    pump();
+    if(camTimer) clearInterval(camTimer);
+    camTimer = setInterval(captureAndDecode, parseInt($('#rx_every').value));
+    log('camera started '+rxCanvas.width+'x'+rxCanvas.height, 'ok');
+  }catch(e){ log('camera unavailable: '+e.message+' (try the simulated capture)', 'warn'); }
+};
+$('#btn_stop').onclick = ()=>{
+  if(camTimer){clearInterval(camTimer); camTimer=null;}
+  if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
+  log('camera stopped','dim');
+};
+$('#file_in').onchange = ()=>{
+  const f = $('#file_in').files[0]; if(!f) return;
+  const img = new Image();
+  img.onload = ()=>{ rxCanvas.width=img.width; rxCanvas.height=img.height; rxCtx.drawImage(img,0,0); };
+  img.src = URL.createObjectURL(f);
+};
+$('#btn_upload').onclick = async ()=>{
+  const f = $('#file_in').files[0];
+  if(!f){ log('choose an image first','warn'); return; }
+  const reader = new FileReader();
+  reader.onload = async ()=>{
+    try{
+      const r = await post('/api/decode', Object.assign(txParams(), {
+        image: reader.result, mode:$('#rx_mode').value}));
+      showCapture(reader.result, r.overlay_png);
+      reportResult(r, 'upload');
+    }catch(e){ log('decode failed: '+e.message,'bad'); }
+  };
+  reader.readAsDataURL(f);
+};
+
+/* ---------- benchmark ---------- */
+$('#btn_bench').onclick = async ()=>{
+  $('#btn_bench').disabled = true; $('#bench_out').textContent='running…';
+  try{
+    const r = await post('/api/bench', Object.assign(txParams(), {
+      modes: $('#bench_mode').value.split(','), n: parseInt($('#bench_n').value),
+      levels:[0.2,0.6,1.0]
+    }));
+    const lines = r.rows.map(x=>`${x.mode.padEnd(10)} level ${x.level.toFixed(2)}  ` +
+      `success ${(x.success*100).toFixed(0).padStart(3)}%  ${x.ms_mean.toFixed(0).padStart(4)} ms  ring ${x.ring_mean.toFixed(2)}`);
+    $('#bench_out').textContent = lines.join('\\n');
+    lines.forEach(l=>log('bench '+l));
+  }catch(e){ $('#bench_out').textContent = 'bench failed: '+e.message; }
+  $('#btn_bench').disabled = false;
+};
+
+/* boot */
+buildFrames().then(()=>log('ready — press “Simulate camera → Capture & decode” for the full TX→RX chain','dim'));
+</script>
+</body>
+</html>

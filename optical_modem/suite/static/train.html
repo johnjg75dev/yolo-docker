@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Train — Screen2Camera suite</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/suite-assets/css/suite.css">
+</head>
+<body class="suite">
+<div class="top"><div class="brand"></div><nav class="nav"></nav><span class="grow"></span>
+  <a class="chip" href="/guide#train">guide →</a></div>
+
+<main class="shell">
+  <h1>Train the detector</h1>
+  <p>A pose model that finds the four grid corners. Runs as a background job;
+     close the tab and it keeps going.</p>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>New run</h2>
+      <label class="f"><span>Project</span>
+        <select id="project"><option value="">— loading… —</option></select></label>
+      <label class="f"><span>Dataset</span>
+        <select id="dataset"><option value="">loading…</option></select></label>
+      <div class="row">
+        <label class="f grow"><span>run name</span>
+          <input id="name" type="text" placeholder="run-001"></label>
+        <label class="f grow"><span>base weights</span>
+          <select id="model"></select></label>
+      </div>
+      <div class="row">
+        <label class="f grow"><span>epochs</span>
+          <input id="epochs" type="number" value="40" min="1" max="2000"></label>
+        <label class="f grow"><span>imgsz</span>
+          <input id="imgsz" type="number" value="448" min="160" max="1280" step="32"></label>
+        <label class="f grow"><span>batch</span>
+          <input id="batch" type="number" value="8" min="1" max="128"></label>
+      </div>
+      <div class="row">
+        <label class="f grow"><span>device</span>
+          <input id="device" type="text" value="cpu"></label>
+        <label class="f grow"><span>workers</span>
+          <input id="workers" type="number" value="2" min="0" max="16"></label>
+        <label class="f grow"><span>seed</span>
+          <input id="seed" type="number" value="0"></label>
+      </div>
+      <button id="go" class="block">Start training</button>
+      <p class="hint" id="estimate">–</p>
+    </section>
+
+    <section class="card">
+      <h2>Live log</h2>
+      <div class="row spread" style="margin-bottom:8px">
+        <span id="status" class="chip">idle</span>
+        <span class="row" style="gap:6px">
+          <button class="ghost" id="cancel" style="padding:5px 10px;font-size:.8rem;display:none">
+            cancel job</button>
+          <a class="chip" id="open-dataset" href="/dataset">dataset page</a>
+        </span>
+      </div>
+      <div class="bar" style="margin-bottom:10px"><i id="bar"></i></div>
+      <div class="log" id="log">no run selected — start one, or open a past run below.</div>
+      <p class="hint">What to watch: <code>pose mAP50-95</code> climbing and
+        <code>epoch n/N</code> advancing. A plateau at 0 usually means bad labels
+        or an unresolvable <code>data.yaml</code> path.</p>
+    </section>
+  </div>
+
+  <section class="card" id="curve-card" style="display:none">
+    <div class="row spread">
+      <h2 style="margin:0">Training curves <span class="muted small" id="curve-run"></span></h2>
+      <span class="chip" id="curve-chip">results.csv</span>
+    </div>
+    <div id="curve"></div>
+    <p class="hint">Pulled from the run's <code>results.csv</code>. Box mAP rising
+      while the losses fall is a healthy run; mAP flat from epoch 5 means the
+      dataset is too small or too repetitive to learn more.</p>
+  </section>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Runs</h2>
+      <span class="chip" id="model-chip">no active model</span>
+    </div>
+    <div id="runs" class="small muted" style="margin-top:10px">loading…</div>
+  </section>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/suite-assets/js/suite.js"></script>
+<script src="/suite-assets/js/viz.js"></script>
+<script src="/suite-assets/js/train.js"></script>
+</body>
+</html>

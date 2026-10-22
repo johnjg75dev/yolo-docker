@@ -1,0 +1,23 @@
+{
+  "name": "Screen2Camera optical modem",
+  "short_name": "S2C modem",
+  "description": "Train a frame detector, photograph codes, and send files screen → camera.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone", "browser"],
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "S2C — send/receive", "url": "/s2c" },
+    { "name": "Capture — photograph codes", "url": "/camera" },
+    { "name": "Capture — show a code", "url": "/display" },
+    { "name": "Train a detector", "url": "/train" }
+  ]
+}

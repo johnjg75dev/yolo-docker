@@ -1,0 +1,140 @@
+# The whole end-to-end suite, on one VPS, behind Coolify's proxy.
+#
+#   1. Coolify -> + New -> Docker Compose -> point at this repo
+#   2. set APP_PASSWORD (required), APP_SECRET (`openssl rand -hex 32`)
+#   3. set a domain; Coolify terminates TLS (phones need HTTPS for the camera)
+#
+#   local:  APP_PASSWORD=secret docker compose up --build
+#           -> http://localhost:8000/
+#
+# Three services, one volume story:
+#
+#   suite    the app (uvicorn, ONE worker)       - datasets, training, S2C
+#   db       Postgres 16: projects, artefacts, job history, transfers
+#   redis    job events (SSE fan-out) + expiring locks + heartbeats
+#
+# `db` and `redis` are not optional extras: without them the app falls back to
+# SQLite ($DATA_DIR/suite.db) and an in-process bus, which works for a single
+# worker but loses cross-process events and durable history on rebuild.
+
+services:
+  suite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: optical-modem-suite:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # ---- required -------------------------------------------------------
+      # Password for the whole suite (laptop + phone log in with it).
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
+      # Stable HMAC key for session cookies: `openssl rand -hex 32`.
+      APP_SECRET: ${APP_SECRET:-}
+      # ---- state ----------------------------------------------------------
+      DATA_DIR: /data
+      # Postgres: metadata only (a few MB); files stay on the volume.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-suite}:${POSTGRES_PASSWORD:-suite}@db:5432/${POSTGRES_DB:-suite}
+      # Redis: job events, locks, heartbeats. Set SUITE_REDIS=0 to disable.
+      REDIS_URL: redis://redis:6379/0
+      # 1 = locate the frame in every capture upload (pure OpenCV, ~0.5-1.5 s)
+      AUTOLABEL: ${AUTOLABEL:-1}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-24}
+      # Secure cookies are the default; 0 only for plain-http LAN testing.
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      # Training parallelism: keep it at the container's CPU limit, not the
+      # host's, or torch will thrash. The compose limits below say 4.
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-4}
+      # Set 0 only if you have pre-populated /data/models with weights and do not
+      # want ultralytics trying to reach the internet for a base checkpoint.
+      YOLO_OFFLINE: ${YOLO_OFFLINE:-1}
+      YOLO_CONFIG_DIR: /data/.ultralytics
+      FORWARDED_ALLOW_IPS: "*"
+      # How many background jobs may run at once. 1 is right for a 4-core box:
+      # training already uses every core, and a second job would only thrash.
+      SUITE_MAX_JOBS: ${SUITE_MAX_JOBS:-1}
+      # Force the S2C receiver mode: auto (default) | yolo | classical.
+      S2C_DECODE_MODE: ${S2C_DECODE_MODE:-auto}
+    volumes:
+      # datasets, runs, models, jobs and photos all live here: one volume to
+      # back up, one directory to copy to a bigger disk later
+      - suite-data:/data
+    ports:
+      - "${SUITE_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        # a 4-core / 8 GB box: leave headroom for Postgres, Redis and the proxy.
+        # Training OOMs? Raise to 4g and lower `batch` on the Train page.
+        limits:
+          cpus: "4.0"
+          memory: 5g
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-suite}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-suite}
+      POSTGRES_DB: ${POSTGRES_DB:-suite}
+      # the suite only needs metadata: keep Postgres small and predictable
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - suite-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-suite} -d ${POSTGRES_DB:-suite}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # aof = job events survive a restart; 128 MB is plenty for a ring buffer
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb",
+              "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - suite-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  suite-data:
+    # Prefer real disk for datasets and photos?  Bind a host path instead:
+    # driver_opts: { type: none, o: bind, device: /srv/optical-suite }
+  suite-db:
+  suite-redis:

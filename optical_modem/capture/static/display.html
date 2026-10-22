@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Optical modem — display</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="display">
+<div id="stage"><img id="frame" alt="code frame"></div>
+
+<div id="hud">
+  <div id="hud-top">
+    <span id="counter" class="mono">–</span>
+    <span id="spec" class="pill"></span>
+    <span id="link" class="pill"><span class="dot"></span> connecting</span>
+    <span class="grow"></span>
+    <button id="btn-hud" class="ghost" title="hide overlay">Hide</button>
+    <button id="btn-full" class="ghost" title="fullscreen">Full</button>
+  </div>
+  <div id="hud-bottom">
+    <div class="grow">
+      <div class="progress"><i id="bar"></i></div>
+      <div class="row" style="margin-top:10px;gap:8px">
+        <button id="btn-undo" class="ghost">↶ Undo last</button>
+        <button id="btn-skip" class="ghost">Skip →</button>
+        <button id="btn-fit" class="ghost">1:1</button>
+        <span id="saved" class="pill"></span>
+      </div>
+    </div>
+    <div class="pairbox" id="pairbox">
+      <img id="qr" alt="pairing QR" hidden>
+      <div>
+        <div class="small muted">phone: scan or enter</div>
+        <div class="paircode" id="code">······</div>
+        <div class="small muted mono" id="pairurl"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast"></div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/display.js"></script>
+</body>
+</html>

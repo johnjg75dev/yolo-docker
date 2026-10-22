@@ -1,0 +1,30 @@
+{
+ "model": "yolo26n-pose.pt",
+ "weights": "/home/user/models/yolo26n_optical/weights/best.pt",
+ "keypoints": [
+  "grid_tl",
+  "grid_tr",
+  "grid_br",
+  "grid_bl"
+ ],
+ "kpt_shape": [
+  4,
+  3
+ ],
+ "task": "pose",
+ "classes": {
+  "0": "optical_frame"
+ },
+ "train_args": {
+  "epochs": 12,
+  "imgsz": 384,
+  "batch": 4,
+  "device": "cpu",
+  "data": "datasets/optical/optical_frames_subset.yaml"
+ },
+ "wall_seconds": 1053.7,
+ "results": {
+  "box_map50_95": 0.7579533006111618,
+  "pose_map50_95": 0.9741288810898545
+ }
+}

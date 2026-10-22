@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Optical modem — camera</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="camera">
+
+<!-- join / login -->
+<div id="join" class="wrap">
+  <h1>Join a capture session</h1>
+  <p class="small">Enter the 6-character code shown on the laptop, or scan the
+     QR code on the laptop screen with your phone camera.</p>
+  <div class="card">
+    <label class="field">
+      <span>Session code</span>
+      <input id="code-input" type="text" inputmode="latin" autocapitalize="characters"
+             autocomplete="off" spellcheck="false" maxlength="6" placeholder="ABC123">
+    </label>
+    <button class="block" id="join-btn">Join</button>
+    <p id="join-note" class="small muted" style="margin-top:12px"></p>
+  </div>
+  <div class="card" id="sessions-card" style="display:none">
+    <h2 class="small muted">Sessions in progress</h2>
+    <div id="session-list" class="small"></div>
+  </div>
+</div>
+
+<!-- camera -->
+<div id="view" class="hidden">
+  <video id="video" playsinline muted autoplay></video>
+  <div id="guide"><div class="box"></div></div>
+  <div id="nocam" class="hidden">
+    <div>
+      <div class="nocam-icon">
+        <svg viewBox="0 0 24 24" width="56" height="56" fill="none"
+             stroke="currentColor" stroke-width="1.6">
+          <path d="M3 8a2 2 0 0 1 2-2h2l1.6-2h6.8L17 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          <circle cx="12" cy="12.5" r="3.5"/><path d="M4 20 20 5"/>
+        </svg>
+      </div>
+      <p><strong>No live camera here.</strong></p>
+      <p class="small muted">The browser would not give this page a camera
+         stream (no camera, or permission was refused). Tap the shutter and the
+         phone's own camera app will open instead.</p>
+    </div>
+  </div>
+
+  <div id="cam-top">
+    <div class="row" style="gap:8px">
+      <span id="counter" class="pill mono">–</span>
+      <span id="link" class="pill"><span class="dot"></span></span>
+    </div>
+    <img id="target" alt="current frame on the laptop">
+  </div>
+
+  <div id="cam-bottom">
+    <div id="status-line">point the phone at the laptop screen</div>
+    <div id="shutter-row">
+      <button class="shutter-side" id="btn-undo">undo<br>last</button>
+      <button id="shutter" aria-label="take photo"></button>
+      <button class="shutter-side" id="btn-skip">skip<br>frame</button>
+    </div>
+  </div>
+</div>
+
+<input id="file-input" type="file" accept="image/*" capture="environment">
+<div class="toast"></div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/camera.js"></script>
+</body>
+</html>

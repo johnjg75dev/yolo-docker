@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Projects — Screen2Camera suite</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/suite-assets/css/suite.css">
+</head>
+<body class="suite">
+<div class="top"><div class="brand"></div><nav class="nav"></nav><span class="grow"></span>
+  <span class="chip" id="db-chip">db: …</span></div>
+
+<main class="shell">
+  <h1>Projects</h1>
+  <p>Every dataset, training run, model and transfer belongs to a project, and a
+     project is either <b>in development</b> or <b>finished</b>. This is the
+     durable record: it lives in the database (<span id="db-kind">…</span>), not in
+     the container, so it survives a rebuild and can be queried later.</p>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">New project</h2>
+      <span class="small muted">slug, title, status, tags</span>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+      <label class="f grow"><span>name (slug)</span>
+        <input id="p-slug" placeholder="v0.3-hd"></label>
+      <label class="f grow"><span>title</span>
+        <input id="p-title" placeholder="v0.3 — HD frames + finder patterns"></label>
+      <label class="f"><span>status</span>
+        <select id="p-status">
+          <option value="development">development</option>
+          <option value="finished">finished</option>
+          <option value="archived">archived</option>
+        </select></label>
+      <label class="f grow"><span>tags (comma separated)</span>
+        <input id="p-tags" placeholder="hd, finder, rgb32"></label>
+    </div>
+    <label class="f" style="margin-top:8px"><span>description</span>
+      <textarea id="p-desc" rows="2" placeholder="what this project is proving"></textarea></label>
+    <div class="row" style="margin-top:8px">
+      <button id="p-create">Create project</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Projects</h2>
+      <div class="row" style="gap:6px">
+        <select id="p-filter">
+          <option value="">all statuses</option>
+          <option value="development">development</option>
+          <option value="finished">finished</option>
+          <option value="archived">archived</option>
+        </select>
+        <button class="ghost" id="p-refresh">refresh</button>
+      </div>
+    </div>
+    <div id="projects" class="small muted" style="margin-top:10px">loading…</div>
+  </section>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Stored state</h2>
+      <span class="small muted" id="counts">–</span>
+    </div>
+    <div id="overview" class="small muted" style="margin-top:10px"></div>
+  </section>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Recent events</h2>
+      <span class="chip" id="bus-chip">bus</span>
+    </div>
+    <div id="events" class="small" style="margin-top:10px;max-height:320px;overflow:auto"></div>
+  </section>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/suite-assets/js/suite.js"></script>
+<script src="/suite-assets/js/projects.js"></script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+[
+ {
+  "modulation": "gray2",
+  "ecc": "rs16",
+  "level": 0.7160680823696507,
+  "frame_px": 288,
+  "grid": 32,
+  "quiet_zone_cells": 2,
+  "cell_px": 8,
+  "display": null,
+  "finder": "dice",
+  "seed": 1000001
+ },
+ {
+  "modulation": "rgb32t4",
+  "ecc": "rs32",
+  "level": 1.0239599103311696,
+  "frame_px": 432,
+  "grid": 32,
+  "quiet_zone_cells": 2,
+  "cell_px": 12,
+  "display": null,
+  "finder": "checker",
+  "seed": 1000002
+ },
+ {
+  "modulation": "gray4",
+  "ecc": "ldpc23",
+  "level": 0.8265705641151665,
+  "frame_px": 684,
+  "grid": 32,
+  "quiet_zone_cells": 3,
+  "cell_px": 8,
+  "display": "1280x720",
+  "finder": "none",
+  "seed": 1000003
+ },
+ {
+  "modulation": "rgb8",
+  "ecc": "rs32",
+  "level": 0.702045244012201,
+  "frame_px": 684,
+  "grid": 32,
+  "quiet_zone_cells": 3,
+  "cell_px": 10,
+  "display": "1280x720",
+  "finder": "ring",
+  "seed": 1000004
+ }
+]

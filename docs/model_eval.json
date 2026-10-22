@@ -1,0 +1,78 @@
+{
+ "weights": "models/yolo26n_optical/weights/best.pt",
+ "imgsz": 448,
+ "levels": {
+  "0.20": {
+   "n": 24,
+   "classical": {
+    "decode_rate": 1.0,
+    "detection_rate": null,
+    "corner_err_pct_median": null,
+    "corner_err_pct_p90": null,
+    "ms_mean": 249.38210879164066
+   },
+   "yolo": {
+    "decode_rate": 1.0,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 5.747588248629275,
+    "corner_err_pct_p90": 6.573170002727273,
+    "ms_mean": 353.85068300001876
+   },
+   "auto": {
+    "decode_rate": 1.0,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 5.747588248629275,
+    "corner_err_pct_p90": 6.573170002727273,
+    "ms_mean": 360.363764291795
+   }
+  },
+  "0.60": {
+   "n": 24,
+   "classical": {
+    "decode_rate": 0.6666666666666666,
+    "detection_rate": null,
+    "corner_err_pct_median": null,
+    "corner_err_pct_p90": null,
+    "ms_mean": 350.99724875002875
+   },
+   "yolo": {
+    "decode_rate": 0.75,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 6.592984584028424,
+    "corner_err_pct_p90": 11.333129927442188,
+    "ms_mean": 374.0388119999996
+   },
+   "auto": {
+    "decode_rate": 0.75,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 6.592984584028424,
+    "corner_err_pct_p90": 11.333129927442188,
+    "ms_mean": 410.1565906250168
+   }
+  },
+  "1.00": {
+   "n": 24,
+   "classical": {
+    "decode_rate": 0.25,
+    "detection_rate": null,
+    "corner_err_pct_median": null,
+    "corner_err_pct_p90": null,
+    "ms_mean": 466.14807266665065
+   },
+   "yolo": {
+    "decode_rate": 0.16666666666666666,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 9.151020599338583,
+    "corner_err_pct_p90": 16.19392900127286,
+    "ms_mean": 521.8374382082894
+   },
+   "auto": {
+    "decode_rate": 0.16666666666666666,
+    "detection_rate": 1.0,
+    "corner_err_pct_median": 9.151020599338583,
+    "corner_err_pct_p90": 16.19392900127286,
+    "ms_mean": 436.45964400004306
+   }
+  }
+ }
+}

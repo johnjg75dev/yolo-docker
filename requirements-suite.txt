@@ -1,0 +1,24 @@
+# Full suite image: the capture station + dataset generation + CPU training.
+# The capture-only image (requirements-web.txt) is ~1 GB; this one is ~2.5 GB
+# because of torch. Everything runs on CPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+numpy>=1.26
+opencv-python-headless>=4.9,<5
+scipy>=1.11
+reedsolo>=1.7
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+segno>=1.6            # QR pairing links
+pyyaml>=6.0
+
+torch>=2.2            # CPU build, from the extra index above
+torchvision>=0.17
+ultralytics>=8.3      # YOLO26-pose training + inference
+
+# --- durable state + messaging (docker-compose runs Postgres 16 and Redis 7) --
+sqlalchemy>=2.0       # schema is engine-agnostic: Postgres in Docker, SQLite locally
+psycopg[binary]>=3.1  # Postgres driver (pure-python fallback included)
+redis>=5.0            # job events (SSE fan-out), expiring locks, heartbeats

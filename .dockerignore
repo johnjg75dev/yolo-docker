@@ -1,0 +1,21 @@
+# build context hygiene: datasets/runs are data, not code — they belong on the volume
+.git
+.venv
+.arena
+.cache
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+datasets
+runs
+logs
+data
+capture-data
+suite-data
+docs/img
+*.mp4
+*.onnx
+*.engine
+*.y4m

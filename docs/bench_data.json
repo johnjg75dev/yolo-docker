@@ -1,0 +1,310 @@
+{
+ "robustness": {
+  "level_s": [
+   0.0,
+   0.2,
+   0.5
+  ],
+  "n": 6,
+  "modulation": "rgb8",
+  "ecc": "rs16",
+  "resolution": "1280x720",
+  "rows": [
+   {
+    "mode": "classical",
+    "level": 0.0,
+    "success": 1.0,
+    "ms": 807.4580218333267,
+    "payload_bytes": 726,
+    "ring_mean": 1.0
+   },
+   {
+    "mode": "yolo",
+    "level": 0.0,
+    "success": 1.0,
+    "ms": 1183.944808499973,
+    "payload_bytes": 726,
+    "ring_mean": 1.0
+   },
+   {
+    "mode": "auto",
+    "level": 0.0,
+    "success": 1.0,
+    "ms": 1218.2056585000016,
+    "payload_bytes": 726,
+    "ring_mean": 1.0
+   },
+   {
+    "mode": "classical",
+    "level": 0.2,
+    "success": 1.0,
+    "ms": 782.67777450003,
+    "payload_bytes": 726,
+    "ring_mean": 0.9974489795918368
+   },
+   {
+    "mode": "yolo",
+    "level": 0.2,
+    "success": 0.8333333333333334,
+    "ms": 553.0844885000002,
+    "payload_bytes": 726,
+    "ring_mean": 0.870748299319728
+   },
+   {
+    "mode": "auto",
+    "level": 0.2,
+    "success": 1.0,
+    "ms": 737.7116795000044,
+    "payload_bytes": 726,
+    "ring_mean": 0.9974489795918368
+   },
+   {
+    "mode": "classical",
+    "level": 0.5,
+    "success": 0.6666666666666666,
+    "ms": 781.7042318333165,
+    "payload_bytes": 726,
+    "ring_mean": 0.961734693877551
+   },
+   {
+    "mode": "yolo",
+    "level": 0.5,
+    "success": 0.3333333333333333,
+    "ms": 723.4356116666542,
+    "payload_bytes": 726,
+    "ring_mean": 0.5646258503401361
+   },
+   {
+    "mode": "auto",
+    "level": 0.5,
+    "success": 0.5,
+    "ms": 840.5523958333561,
+    "payload_bytes": 726,
+    "ring_mean": 0.6462585034013605
+   }
+  ]
+ },
+ "modulations": {
+  "levels_s": [
+   0.1,
+   0.25
+  ],
+  "n": 4,
+  "ecc": "rs16",
+  "resolution": "1280x720",
+  "rows": [
+   {
+    "modulation": "gray2",
+    "bits_per_cell": 1.0,
+    "n_bytes": 237,
+    "rates": {
+     "0.10": 1.0,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "gray4",
+    "bits_per_cell": 2.0,
+    "n_bytes": 478,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 1.0
+    }
+   },
+   {
+    "modulation": "rgb8",
+    "bits_per_cell": 3.0,
+    "n_bytes": 726,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "rgb8x2",
+    "bits_per_cell": 4.0,
+    "n_bytes": 974,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 0.0
+    }
+   },
+   {
+    "modulation": "rgb16",
+    "bits_per_cell": 4.0,
+    "n_bytes": 974,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 0.0
+    }
+   },
+   {
+    "modulation": "rgb16dp",
+    "bits_per_cell": 2.0,
+    "n_bytes": 472,
+    "rates": {
+     "0.10": 1.0,
+     "0.25": 1.0
+    }
+   },
+   {
+    "modulation": "rgb32",
+    "bits_per_cell": 5.0,
+    "n_bytes": 1222,
+    "rates": {
+     "0.10": 0.25,
+     "0.25": 0.5
+    }
+   },
+   {
+    "modulation": "rgb32dp",
+    "bits_per_cell": 2.5,
+    "n_bytes": 582,
+    "rates": {
+     "0.10": 0.5,
+     "0.25": 0.5
+    }
+   },
+   {
+    "modulation": "rgb8t4",
+    "bits_per_cell": 5.0,
+    "n_bytes": 587,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "rgb16t4",
+    "bits_per_cell": 6.0,
+    "n_bytes": 715,
+    "rates": {
+     "0.10": 0.75,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "rgb32t4",
+    "bits_per_cell": 7.0,
+    "n_bytes": 826,
+    "rates": {
+     "0.10": 0.5,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "rgb32t16",
+    "bits_per_cell": 9.0,
+    "n_bytes": 1065,
+    "rates": {
+     "0.10": 0.25,
+     "0.25": 0.75
+    }
+   },
+   {
+    "modulation": "rgb16t4dp",
+    "bits_per_cell": 3.0,
+    "n_bytes": 326,
+    "rates": {
+     "0.10": 0.5,
+     "0.25": 0.5
+    }
+   }
+  ]
+ },
+ "eccs": {
+  "levels_s": [
+   0.25,
+   0.45
+  ],
+  "n": 4,
+  "ecc": [
+   "rs8",
+   "rs16",
+   "rs32",
+   "rs64",
+   "ldpc12",
+   "ldpc23",
+   "none"
+  ],
+  "modulation": "rgb8",
+  "resolution": "1280x720",
+  "rows": [
+   {
+    "ecc": "rs8",
+    "max_payload": 758,
+    "rates": {
+     "0.25": 0.5,
+     "0.45": 0.5
+    }
+   },
+   {
+    "ecc": "rs16",
+    "max_payload": 726,
+    "rates": {
+     "0.25": 0.75,
+     "0.45": 0.75
+    }
+   },
+   {
+    "ecc": "rs32",
+    "max_payload": 667,
+    "rates": {
+     "0.25": 0.75,
+     "0.45": 0.25
+    }
+   },
+   {
+    "ecc": "rs64",
+    "max_payload": 571,
+    "rates": {
+     "0.25": 1.0,
+     "0.45": 0.75
+    }
+   },
+   {
+    "ecc": "ldpc12",
+    "max_payload": 362,
+    "rates": {
+     "0.25": 1.0,
+     "0.45": 0.5
+    }
+   },
+   {
+    "ecc": "ldpc23",
+    "max_payload": 526,
+    "rates": {
+     "0.25": 1.0,
+     "0.45": 0.75
+    }
+   },
+   {
+    "ecc": "none",
+    "max_payload": 790,
+    "rates": {
+     "0.25": 0.75,
+     "0.45": 0.0
+    }
+   }
+  ]
+ },
+ "transfer": {
+  "bytes": 4000,
+  "frames": 6,
+  "rounds": 5,
+  "seconds": 21.3,
+  "delivered": 9,
+  "complete": true,
+  "bytes_per_s": 187.6,
+  "level": 0.35,
+  "drop": 0.35,
+  "modulation": "rgb8",
+  "ecc": "rs16",
+  "resolution": "1280x720"
+ },
+ "meta": {
+  "generated": "2026-10-22 00:10",
+  "n": 4,
+  "platform": "CPU only, 2 cores, no GPU"
+ }
+}

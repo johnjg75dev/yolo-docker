@@ -1,0 +1,12 @@
+# Runtime dependencies of the capture station (the PWA web image).
+# Deliberately WITHOUT torch / ultralytics: the station renders frames with the
+# pure NumPy/OpenCV path and auto-labels photos with the classical localiser.
+numpy>=1.26
+opencv-python-headless>=4.9,<5
+scipy>=1.11
+reedsolo>=1.7
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+segno>=1.6            # QR code pairing link on the display page

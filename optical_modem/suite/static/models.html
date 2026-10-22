@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Models — Screen2Camera suite</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/suite-assets/css/suite.css">
+</head>
+<body class="suite">
+<div class="top"><div class="brand"></div><nav class="nav"></nav><span class="grow"></span>
+  <a class="chip" href="/guide#promote">guide →</a></div>
+
+<main class="shell">
+  <h1>Model registry</h1>
+  <p>Promoting a run copies its <code>best.pt</code> here and makes it
+     <b>active</b>: the model the S2C receiver and the capture station's
+     auto-labeller use. Keep more than one — switching is instant.</p>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Registry</h2>
+      <span class="chip" id="active-chip">–</span>
+    </div>
+    <div id="models" class="small muted" style="margin-top:10px">loading…</div>
+  </section>
+
+  <section class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Runs available to promote</h2>
+      <a class="chip" href="/train">train more →</a>
+    </div>
+    <div id="runs" class="small muted" style="margin-top:10px">loading…</div>
+  </section>
+
+  <section class="card" id="card-card" style="display:none">
+    <div class="row spread">
+      <h2 style="margin:0" id="card-title">model card</h2>
+      <button class="ghost" id="card-close">close</button>
+    </div>
+    <pre class="cmd" id="card-json" style="max-height:420px;overflow:auto"></pre>
+  </section>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/suite-assets/js/suite.js"></script>
+<script src="/suite-assets/js/models.js"></script>
+</body>
+</html>

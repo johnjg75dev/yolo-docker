@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guide — Screen2Camera suite</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="/static/icons/icon-192.png">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/suite-assets/css/suite.css">
+</head>
+<body class="suite">
+<div class="top"><div class="brand"></div><nav class="nav"></nav><span class="grow"></span>
+  <a class="chip" href="/">overview</a></div>
+
+<main class="shell narrow">
+  <h1>The walkthrough</h1>
+  <p>From an empty container to a working screen→camera link, in the order that
+     fails fastest. Each step says what to do, what you should see, and what to
+     do when it does not.</p>
+
+  <div class="guide-banner" style="margin-bottom:14px">
+    <div style="flex:1">
+      <div class="g-t">Want it done rather than read?</div>
+      <div class="g-b">The guided setup shows one step at a time, ticks each one off
+        as it really finishes, and runs the default action for you.</div>
+    </div>
+    <a class="chip ok" href="/wizard">Open guided setup →</a>
+  </div>
+
+  <section class="card" style="margin-bottom:16px">
+    <div class="row spread" style="margin-bottom:4px">
+      <h2 style="margin:0">The pipeline, end to end</h2>
+      <span class="small muted">greener = further along on this box</span>
+    </div>
+    <div id="pipeline">loading…</div>
+  </section>
+
+  <div class="callout" style="margin-bottom:18px">
+    <p><strong>How the pieces fit.</strong> A <em>frame</em> is a
+       colour-and-pattern grid carrying a Reed–Solomon protected payload, plus a
+       1-cell calibration ring so the receiver can colour-calibrate itself. A
+       <em>detector</em> finds the four grid corners in a photo; the shared
+       demodulator + FEC then reads the bits. This suite trains that detector
+       and then uses it: <b>dataset → model → S2C</b>.</p>
+  </div>
+
+  <!-- 1 ------------------------------------------------------------ -->
+  <section class="card" id="env">
+    <div class="row spread"><h2>1 · Environment</h2><span id="s-env" class="chip">?</span></div>
+    <p>Training needs <code>torch</code> and <code>ultralytics</code>; the rest of
+       the stack is NumPy/OpenCV/FastAPI. The container installs the CPU build of
+       torch on purpose — an 8 GB VPS will not fit the CUDA stack, and this
+       workload trains fine on CPU at small model sizes.</p>
+    <div id="env-grid" class="small muted">checking…</div>
+    <p class="hint">Rule of thumb on 4 vCPU: <b>yolo26n-pose @ 448 px, batch 8</b>
+       ≈ 1.2 s per image-epoch. 300 images × 40 epochs ≈ 25 min.</p>
+  </section>
+
+  <!-- 2 ------------------------------------------------------------ -->
+  <section class="card" id="dataset">
+    <div class="row spread"><h2>2 · Dataset</h2><span id="s-dataset" class="chip">?</span></div>
+    <p>Two complementary sources. Synthetic data covers the palette/grid space
+       cheaply; real photographs cover what simulation gets wrong (moiré, screen
+       glare, phone colour pipelines, awkward angles).</p>
+
+    <h3>2a · Synthetic (start here)</h3>
+    <p class="small">Renders frames across every modulation and grid, pushes them
+       through the camera-channel model (blur, noise, gamma, vignetting,
+       highlights, JPEG), and writes YOLO-pose labels.</p>
+    <pre class="cmd">python -m optical_modem.suite.tasks synth \
+  --out /data/datasets/synth-001 --train 300 --val 60 --seed 1</pre>
+    <p class="small muted">Or press <b>Generate</b> on the
+       <a href="/dataset">Dataset</a> page — same command, as a background job.</p>
+
+    <h3>2b · Real captures (the capture station)</h3>
+    <p class="small">Open <a href="/display">Display</a> on the laptop, start a
+       session, then open <a href="/camera">Photograph</a> on the phone and enter
+       the 6-character code (or scan the QR). Both advance after every shot. Each
+       photo is stored with a sidecar describing the frame, and auto-labelled with
+       the classical localiser — or with <em>the active detector</em> once you have
+       one, which is how the loop improves with use.</p>
+    <pre class="cmd">python -m optical_modem.suite.tasks captures \
+  --data-dir /data --out /data/datasets/real-001 --verified-only</pre>
+    <p class="hint">100 photos of a screen at different angles/lighting is a
+       meaningful dataset. The labeller verifies ~70–80 % of handheld shots;
+       <code>--verified-only</code> keeps those.</p>
+
+    <h3>2c · Merge into one training set</h3>
+    <pre class="cmd">python -m optical_modem.suite.tasks merge --out /data/datasets/train-001 \
+  --source /data/datasets/synth-001 --source /data/datasets/real-001</pre>
+    <p class="hint">Check the labels before training: the Dataset page shows
+       annotated previews. A wrong keypoint order is invisible in the logs and
+       ruining in the model.</p>
+  </section>
+
+  <!-- 3 ------------------------------------------------------------ -->
+  <section class="card" id="train">
+    <div class="row spread"><h2>3 · Train</h2><span id="s-train" class="chip">?</span></div>
+    <p>Fine-tune a pose model. The dataset's <code>data.yaml</code> already
+       carries <code>kpt_shape: [4, 3]</code> and
+       <code>flip_idx: [1, 0, 3, 2]</code>, so horizontal flips keep the keypoint
+       semantics (0=TL, 1=TR, 2=BR, 3=BL).</p>
+    <pre class="cmd">python -m optical_modem.data.train_yolo \
+  --data /data/datasets/train-001/data.yaml \
+  --model yolo26n-pose.pt --epochs 40 --imgsz 448 --batch 8 \
+  --device cpu --project /data/runs --name run-001</pre>
+    <p class="small">The run writes <code>weights/best.pt</code> and
+       <code>model_card.json</code> (keypoint order, geometry, metrics) next to
+       it. Watch the log on the <a href="/train">Train</a> page: the number that
+       matters is <code>pose mAP50-95</code>, not box mAP.</p>
+    <div class="callout warn"><p><b>Expectations.</b> A first run on 300 synthetic
+      images reaches box mAP50-95 ≈ 0.7–0.8 within 20 epochs. If it plateaus near
+      zero, the labels are wrong or the dataset path in
+      <code>data.yaml</code> does not resolve inside the container — check the
+      Dataset page's preview.</p></div>
+  </section>
+
+  <!-- 4 ------------------------------------------------------------ -->
+  <section class="card" id="verify">
+    <div class="row spread"><h2>4 · Verify</h2><span id="s-verify" class="chip">?</span></div>
+    <p>Two different questions, both cheap:</p>
+    <ul class="small">
+      <li><b>Detection quality</b> — mean corner error as a fraction of the frame
+        side, detection rate, end-to-end decode rate, ms/frame. The
+        <a href="/evaluate">Verify</a> page runs <code>scripts/evaluate.py</code>.</li>
+      <li><b>Does the byte path work</b> — the <em>loopback</em> check in
+        <a href="/s2c">S2C</a> renders a frame, simulates a camera, decodes it with
+        the active model and compares the payload byte-for-byte.</li>
+    </ul>
+    <p class="hint">Target: corner error well under 0.5 cell (at 448 px, a 48-cell
+      frame with a 0.4-cell error is still decodable because the ring
+      re-aligns it). Decode rate is the number to quote.</p>
+  </section>
+
+  <!-- 5 ------------------------------------------------------------ -->
+  <section class="card" id="promote">
+    <div class="row spread"><h2>5 · Promote the model</h2><span id="s-models" class="chip">?</span></div>
+    <p>"Promote" copies a run's <code>best.pt</code> into the model registry and
+       makes it <em>active</em>. The active model is what the S2C receiver and the
+       capture station's auto-labeller use, so this is the switch between
+       experiments and production.</p>
+    <pre class="cmd"># via the UI: Train → promote,   or
+curl -X POST -b cookie.txt -H 'content-type: application/json' \
+  -d '{"run":"run-001"}' https://YOUR-DOMAIN/api/suite/models/promote</pre>
+    <p class="small">Registry layout: <code>/data/models/&lt;name&gt;/weights/best.pt</code>
+       plus <code>active.json</code>. Dropping a hand-trained <code>best.pt</code>
+       in there and activating it from <a href="/models">Models</a> works too.</p>
+  </section>
+
+  <!-- 6 ------------------------------------------------------------ -->
+  <section class="card" id="s2c">
+    <div class="row spread"><h2>6 · Use it: S2C</h2><span class="chip">last</span></div>
+    <p>On the laptop, open <a href="/s2c">S2C</a>, type a message (or pick a file)
+       and press <b>Start transfer</b>: frames play full-screen at the chosen rate
+       with repeats. On the phone, open the same page, choose the transfer, press
+       <b>Receive</b> and let it shoot continuously — it decodes each still, and
+       the transfer completes when every chunk has arrived, in any order.</p>
+    <p class="small muted">Throughput is roughly
+      <code>payload_per_frame × fps</code>. A 1280×720 rgb8/rs32 frame carries
+      ~700 B; at 3 fps that is ~2 kB/s. Raise fps for a short range / still
+      phone, lower it (or raise repeats) for a shaky hand.</p>
+  </section>
+
+  <!-- projects ----------------------------------------------------- -->
+  <section class="card" id="projects">
+    <div class="row spread"><h2>Keep it organised: projects</h2>
+      <a class="chip" href="/projects">open projects →</a></div>
+    <p>Every dataset, run, model and transfer can belong to a
+      <b>project</b> — created in <b>development</b> and flipped to
+      <b>finished</b> when it works. The Projects page shows what each one owns
+      and the live event feed (job started/finished, dataset ready, model
+      promoted).</p>
+    <p class="small muted">Pick the project once on the <a href="/dataset">Dataset</a>
+      or <a href="/train">Train</a> page and it sticks for the session; the API
+      accepts the same field (<code>"project": "v0.3-hd"</code>). Records live in
+      the database (Postgres in Docker, SQLite without it) on the
+      <code>/data</code> side of the container — so "what did this box do last
+      week?" survives a rebuild. Job logs and the photo files stay on the volume;
+      the database holds the metadata, never the images.</p>
+  </section>
+
+  <!-- finder -------------------------------------------------------- -->
+  <section class="card" id="finder">
+    <h2>Optional finder pattern</h2>
+    <p>On the <a href="/s2c">S2C</a> page, <b>finder</b> adds a high-contrast shape
+      to the inner corners of every frame: <code>ring</code>,
+      <code>dice</code>, <code>bullseye</code>, <code>checker</code>,
+      <code>diamond</code>, <code>cross</code>, <code>x</code>,
+      <code>bracket</code>, <code>triangle</code>, <code>solid</code> — or
+      <code>none</code>.</p>
+    <ul class="small">
+      <li><b>It never overwrites data.</b> Its symbols are removed from the
+        header and payload before either is filled; the layout refuses to build
+        if the regions would overlap.</li>
+      <li><b>It costs capacity</b>, and the UI says how much next to the selector
+        (≈10 % for the 5×5 shapes, ≈6 % for the 4×4 ones). The receiver reports a
+        <code>finder_score</code> per decode, so you can see whether it is
+        helping.</li>
+      <li><b>Use it</b> when the phone is far away, the screen is dim, or the
+        frame is rotated — the anchor makes scale/rotation estimation cheaper and
+        more stable. Leave it <code>none</code> for maximum throughput at close
+        range.</li>
+    </ul>
+  </section>
+
+  <!-- 7 ------------------------------------------------------------ -->
+  <section class="card">
+    <h2>7 · When something is off</h2>
+    <table class="t">
+      <tr><th>Symptom</th><th>Usual cause / fix</th></tr>
+      <tr><td>Detector finds nothing</td>
+          <td>Frames too small in the photo (fill more of the view), too much
+              blur, or the model was trained on a different grid size than the
+              one being displayed. Try <em>classical</em> mode in the S2C receive
+              panel to see whether the problem is localisation or decoding.</td></tr>
+      <tr><td>Corners found, decode fails</td>
+          <td>Wrong modulation/ECC in the transfer settings vs. what the receiver
+              expects, or the screen is scaling the frame (use 1:1 / native
+              resolution on the display page).</td></tr>
+      <tr><td>Training loss flat</td>
+          <td>Labels missing for some images (the merge skips unlabelled pairs),
+              <code>data.yaml</code> pointing at a path that does not exist in the
+              container, or <code>kpt_shape</code> mismatch.</td></tr>
+      <tr><td>OOM / killed during training</td>
+          <td>Lower <code>--batch</code> and/or <code>--imgsz</code>; the compose
+              file caps the container at 2 GB, raise it to 4 GB if the box has
+              8 GB.</td></tr>
+      <tr><td>Phone camera never opens</td>
+          <td>The page must be served over HTTPS (Coolify gives you that).
+              On plain http the capture page falls back to the system camera
+              app; the S2C receiver does the same.</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Command-line equivalents</h2>
+    <p class="small">Everything the UI does is also a command, so you can script
+       or reproduce it outside the browser:</p>
+    <pre class="cmd"># what is in this container
+python -m optical_modem.suite.tasks info --data-dir /data
+python -m optical_modem info
+# dataset -> train -> verify -> promote
+python -m optical_modem.suite.tasks synth --out /data/datasets/s1 --train 300 --val 60
+python -m optical_modem.suite.tasks merge --out /data/datasets/t --source /data/datasets/s1
+python -m optical_modem.data.train_yolo --data /data/datasets/t/data.yaml --epochs 40
+python scripts/evaluate.py --weights /data/runs/run-001/weights/best.pt --out r.json
+# S2C from a terminal (no browser)
+python -m optical_modem send --file README.md --out frames/
+python -m optical_modem receive photo.jpg</pre>
+  </section>
+</main>
+
+<script src="/static/js/common.js"></script>
+<script src="/suite-assets/js/suite.js"></script>
+<script src="/suite-assets/js/viz.js"></script>
+<script src="/suite-assets/js/guide.js"></script>
+</body>
+</html>
