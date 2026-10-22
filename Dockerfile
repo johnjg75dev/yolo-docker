@@ -62,12 +62,12 @@ RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin suite \
  && chown -R suite:suite /app /data
 USER suite
 
-EXPOSE 8000
+EXPOSE 8889
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8889/healthz', timeout=4).status==200 else 1)"
 
 # ONE worker: sessions, jobs and transfers live in this process
 CMD ["python", "-m", "uvicorn", "optical_modem.suite.app:app", \
-     "--host", "0.0.0.0", "--port", "8000", "--workers", "1", \
+     "--host", "127.0.0.1", "--port", "8889", "--workers", "2", \
      "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]

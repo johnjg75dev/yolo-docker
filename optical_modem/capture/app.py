@@ -45,6 +45,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from .. import net
 from ..config import MODULATIONS
 from .sessions import (DEFAULT_RESOLUTION, Session, SessionStore, label_photo)
 
@@ -87,6 +88,9 @@ SECRET = _secret()
 STORE = SessionStore(DATA_DIR)
 app = FastAPI(title="Optical modem capture station", docs_url=None,
               redoc_url=None, openapi_url=None)
+# behind Traefik / Coolify / nginx: trust the forwarded scheme and keep every
+# redirect relative, so https can never be downgraded into a redirect loop
+net.install(app)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 #: naive per-IP login throttle (a personal deployment, not a public service)
@@ -141,8 +145,8 @@ def _page(name: str) -> HTMLResponse:
     path = STATIC / name
     if not path.exists():                # pragma: no cover
         raise HTTPException(500, f"missing {name}")
-    return HTMLResponse(path.read_text(), headers={
-        "Cache-Control": "no-cache",
+    return HTMLResponse(net.stamp_build(path.read_text()), headers={
+        "Cache-Control": "no-store",
         "Service-Worker-Allowed": "/",
     })
 
@@ -170,10 +174,28 @@ def manifest() -> Response:
 
 @app.get("/sw.js")
 def service_worker() -> Response:
-    return Response((STATIC / "sw.js").read_text(),
-                    media_type="application/javascript",
-                    headers={"Cache-Control": "no-cache",
+    """The service worker, versioned by the build.
+
+    The cache name must change whenever an asset does, or an installed PWA keeps
+    serving the previous release's JavaScript forever — and because service
+    workers only run in a secure context, that stale-shell bug shows up **only
+    over https** ("it works on http but not behind Traefik").
+    """
+    body = (STATIC / "sw.js").read_text().replace("__BUILD__", net.build_id())
+    return Response(body, media_type="application/javascript",
+                    headers={"Cache-Control": "no-store",
                              "Service-Worker-Allowed": "/"})
+
+
+@app.get("/api/net/diagnose")
+def net_diagnose(request: Request) -> dict:
+    """Public: what this process can tell about the proxy in front of it.
+
+    Deliberately unauthenticated — it is the endpoint you hit when login does not
+    work, so it must not require a login.  It exposes no secrets (no password, no
+    cookie value, no paths).
+    """
+    return net.diagnose(request)
 
 
 @app.get("/healthz")
@@ -216,15 +238,20 @@ async def login(request: Request, response: Response, payload: dict) -> dict:
         raise HTTPException(401, "wrong password")
     _ATTEMPTS.pop(ip, None)
     token = _sign(str(now))
+    # Secure is derived from the *browser's* scheme (X-Forwarded-Proto), not from
+    # the plain-HTTP socket this process sees: behind Traefik that socket is
+    # always http, and a Secure cookie sent over plain http is silently dropped
+    # by the browser — which looks exactly like "the password is wrong".
     response.set_cookie(COOKIE_NAME, token, max_age=COOKIE_MAX_AGE,
                         httponly=True, samesite="lax",
-                        secure=os.environ.get("COOKIE_SECURE", "1") != "0")
+                        secure=net.cookie_secure(request))
     return {"ok": True, "password_set": bool(APP_PASSWORD)}
 
 
 @app.post("/api/logout")
-async def logout(response: Response) -> dict:
-    response.delete_cookie(COOKIE_NAME)
+async def logout(request: Request, response: Response) -> dict:
+    response.delete_cookie(COOKIE_NAME, secure=net.cookie_secure(request),
+                           httponly=True, samesite="lax")
     return {"ok": True}
 
 
@@ -427,10 +454,13 @@ async def events(sid: str, request: Request, role: str | None = None):
         finally:
             STORE.unsubscribe(sid, queue)
 
+    # `Connection` is a hop-by-hop header and is illegal in HTTP/2 (which is what
+    # Traefik speaks to a browser): proxies may drop the whole response.  The
+    # no-transform hint plus X-Accel-Buffering is what actually keeps a buffering
+    # proxy from holding the stream.
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no",
-                                      "Connection": "keep-alive"})
+                             headers={"Cache-Control": "no-cache, no-transform",
+                                      "X-Accel-Buffering": "no"})
 
 
 def _sse(event: str, data: dict) -> str:

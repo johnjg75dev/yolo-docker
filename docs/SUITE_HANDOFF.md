@@ -22,7 +22,9 @@ left, in priority order). Everything before this session's last turn is verified
 ## 0. Contents
 
 1. Status at handoff
-2. Deploy on the VPS with Coolify  (+ §2.1 state services: Postgres & Redis)
+2. Deploy on the VPS with Coolify  (+ §2.1 state services: Postgres & Redis;
+   + §2.2 **HTTPS behind Traefik — the four bugs and the fix**)
+2.8 Diagnosing a deployment in one command (`scripts/check_https.py`)
 3. Run it locally (no Docker)
 4. Repository map
 5. Environment variables
@@ -77,7 +79,10 @@ Target: Ubuntu 26.04, 4 vCPU, 8 GB RAM, 100 GB disk, Docker + Coolify installed.
    |---|---|---|
    | `APP_PASSWORD` | **yes** | the single password for laptop *and* phone |
    | `APP_SECRET` | strongly yes | HMAC key for session cookies: `openssl rand -hex 32`. If unset, a random key is generated into `/data/secret.key` and sessions die on redeploy |
-   | `COOKIE_SECURE` | no (default `1`) | keep `1` behind Coolify's TLS; `0` only for plain-HTTP LAN testing |
+   | `COOKIE_SECURE` | no (default `auto`) | `auto` = `Secure` exactly when the browser is on https. Leave it alone: `1` breaks plain-HTTP LAN testing, `0` weakens https |
+   | `TRUST_PROXY` | no (default `1`) | read `X-Forwarded-Proto`/`-Host`. Keep `1` behind Coolify; `0` only if the container is exposed directly |
+   | `FORCE_HTTPS` | no (default `0`) | app-side 308 http→https. Keep `0` **while the proxy redirects** — two redirectors is how loops start |
+   | `PUBLIC_URL` | no | the exact origin users type, e.g. `https://s2c.example.com`; used for links/QR codes printed in the UI |
    | `AUTOLABEL` | no (default `1`) | locate the frame in each uploaded photo with pure OpenCV (~0.5–1.5 s) |
    | `MAX_UPLOAD_MB` | no (default `24`) | phone photo size cap |
    | `OMP_NUM_THREADS`, `MKL_NUM_THREADS` | no (default `4`) | keep equal to the CPU limit, not the host's core count |
@@ -147,6 +152,149 @@ The Projects page (`/projects`) is the UI for this: create a project, set it to
 event feed. Dataset and Train pages carry a project selector that remembers your
 choice, so artefacts created from a browser are filed automatically.
 
+### 2.2 HTTPS behind Traefik / Coolify — why it broke, and the fix
+
+The container never sees a TLS socket. Traefik terminates TLS and forwards
+**plain HTTP** to uvicorn. Every scheme-dependent decision therefore has to come
+from `X-Forwarded-Proto`, not from the socket. Four separate bugs came from
+reading the socket/static config instead, and all four are invisible on a laptop
+over http — which is precisely the "http works, https does not" report.
+
+| # | symptom | real cause | fix (in code now) |
+|---|---|---|---|
+| 1 | `ERR_TOO_MANY_REDIRECTS` on https only | Starlette's trailing-slash redirect built an **absolute** URL from `scope["scheme"]` = `http`; the browser went to http, Traefik redirected back to https, forever | `ProxySchemeMiddleware` sets `scope["scheme"]` from `X-Forwarded-Proto` *and* rewrites same-host `Location` headers to **path-relative** (`/api/login`), so a redirect can never downgrade the scheme |
+| 2 | login "does nothing"; every API `401` | `COOKIE_SECURE=1` → `Set-Cookie: …; Secure` sent over a plain-HTTP socket; browsers drop it silently | `COOKIE_SECURE=auto` (new default): `Secure` exactly when the browser is on https. Logout deletes the cookie with the same flags |
+| 3 | after a redeploy, the old UI loads and its buttons do nothing — https only | service workers *only run in secure contexts*, so http testing never had one; `sw.js` had a hand-maintained `VERSION = "om-suite-v4"` that nobody bumped | `/sw.js` now substitutes `om-suite-<build>` where `<build>` is a hash of the code + static files (`net.build_id()`), pages carry `<meta name="om-build">`, and `common.js` reloads once when the server's build differs |
+| 4 | job progress freezes behind TLS, a reload catches up | the capture SSE sent the hop-by-hop header `Connection: keep-alive`, illegal in HTTP/2, and could be buffered | removed; events now send `Cache-Control: no-cache, no-transform` + `X-Accel-Buffering: no` |
+
+Also worth knowing: the phone camera (`getUserMedia`) and service workers require
+a secure context, so **plain http can never be the production answer** — the app
+tells you this itself (see `secure_context` below).
+
+#### The Traefik labels Coolify should generate
+
+```yaml
+traefik.enable=true
+traefik.http.routers.s2c.rule=Host(`s2c.example.com`)
+traefik.http.routers.s2c.entrypoints=websecure
+traefik.http.routers.s2c.tls=true
+traefik.http.routers.s2c.tls.certresolver=letsencrypt
+traefik.http.services.s2c.loadbalancer.server.port=8000
+
+# plain http → https. permanent=true is 308: it PRESERVES the method and body.
+# 301/302 silently turn the login POST into a GET, which looks like
+# "the password is ignored".
+traefik.http.middlewares.s2c-https.redirectscheme.scheme=https
+traefik.http.middlewares.s2c-https.redirectscheme.permanent=true
+traefik.http.routers.s2c-http.rule=Host(`s2c.example.com`)
+traefik.http.routers.s2c-http.entrypoints=web
+traefik.http.routers.s2c-http.middlewares=s2c-https
+```
+
+Traefik sends `X-Forwarded-Proto`, `X-Forwarded-For` and `X-Forwarded-Host` by
+default, and the Dockerfile CMD already runs uvicorn with
+`--proxy-headers --forwarded-allow-ips '*'`. If Coolify overrides the command,
+keep those two flags. **Do not** also set `FORCE_HTTPS=1` while the proxy
+redirects (two redirectors = loops) — that flag exists for a bare
+`docker run -p 80:8000` deployment.
+
+#### Diagnosing it in one command
+
+```bash
+# from your laptop, against the public URL
+python3 scripts/check_https.py --base https://s2c.example.com --password '…'
+
+# against the local TLS stand-in used to develop this (self-signed cert)
+python3 scripts/check_https.py --base https://127.0.0.1:8443 --plain-port 8080 \
+        --password demo --local
+```
+
+It walks the browser's path and prints one verdict per step: TCP → TLS
+certificate → http→https redirect *and its status code* → `X-Forwarded-Proto`
+→ app-vs-browser scheme → cookie flags → login + authenticated API call → SSE
+actually streaming. Exit code 1 means a real problem; every failure line carries
+the fix. Verified output against the recommended config:
+
+```
+ok    tcp                 127.0.0.1:8446 reachable
+ok    tls                 TLSv1.3 · issuer …
+ok    redirect            308 → https://127.0.0.1:8446/api/suite/diagnose
+ok    scheme              app and browser both see 'https'
+ok    forwarded_proto     X-Forwarded-Proto: https
+ok    scheme_trusted      app sees scheme='https', browser is on 'https'
+ok    redirects_relative  absolute redirects are rewritten to path-relative Location headers
+ok    cookie_secure       COOKIE_SECURE=auto → cookie Secure=True (browser scheme https)
+ok    secure_context      browser origin is https://127.0.0.1:8446
+ok    proxy_hops          X-Forwarded-For: 127.0.0.1
+ok    build               97209b98
+ok    login               cookie stored (Secure=True), authenticated API 200
+ok    sse                 streaming (0.01s to first byte: b'retry: 3000\n')
+VERDICT: https looks correct end to end.
+```
+
+The same page is available as JSON, unauthenticated, so it works while you are
+locked out of the UI:
+
+```bash
+curl -s https://s2c.example.com/api/suite/diagnose | python -m json.tool
+```
+
+```
+{
+  "ok": true, "scheme": "https", "scope_scheme": "https",
+  "secure_context": true, "host": "s2c.example.com", "public_url": "",
+  "behind_proxy": true, "trust_proxy": true, "force_https": false,
+  "cookie_mode": "auto", "cookie_secure": true,
+  "headers": { "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9",
+               "x-forwarded-host": "s2c.example.com", "host": "s2c.example.com" },
+  "build": "97209b98",
+  "checks": [ { "id": "forwarded_proto", "ok": true, "detail": "…", "fix": "…" }, … ],
+  "problems": [],
+  "verdict": "proxy headers look correct"
+}
+```
+
+Check ids, each with a `detail` you can paste into a bug report and a `fix`:
+`forwarded_proto`, `scheme_trusted`, `redirects_relative`, `cookie_secure`,
+`secure_context`, `public_url`, `proxy_hops`. `/healthz` also gained `build`,
+which is the quickest way to confirm a deploy actually landed:
+
+```bash
+curl -fsS https://s2c.example.com/healthz | python -c 'import json,sys;print(json.load(sys.stdin)["build"])'
+```
+
+#### Reproducing the proxy locally
+
+`scripts/dev_tls_proxy.py` is a 200-line asyncio Traefik stand-in: terminates
+TLS, forwards `X-Forwarded-*`, and can misbehave on demand.
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/key.pem -out /tmp/cert.pem \
+    -days 2 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+python3 scripts/dev_tls_proxy.py --listen 8443 --plain-port 8080 \
+    --upstream 127.0.0.1:8000 --cert /tmp/cert.pem --key /tmp/key.pem \
+    --redirect-http 308          # 308 = the recommended Traefik setting
+```
+
+Switches that reproduce each real-world failure:
+`--no-forwarded-proto` (proxy drops the header), `--redirect-http 302` (POST
+becomes GET), `--buffer` (a buffering proxy — SSE freezes),
+`--strip-cookie-secure` (an intermediary that rewrites `Set-Cookie`).
+
+Before the fix, `--no-forwarded-proto` produced exactly the loop:
+
+```
+$ curl -sk -X POST https://127.0.0.1:8444/api/login/ -D - -o /dev/null | grep -i location
+location: http://127.0.0.1:8444/api/login      # → browser goes to http → proxy → …
+```
+
+After it:
+
+```
+location: /api/login                            # relative: scheme preserved
+```
+
 ### The intended two-device use
 
 * **Laptop:** log in, open `/s2c`, type a message, *Start transfer*. The page plays
@@ -169,7 +317,7 @@ python -m pip install -r requirements-suite.txt     # or requirements-web.txt fo
 export DATA_DIR=$PWD/.data                          # any writable directory
 export APP_PASSWORD=demo APP_SECRET=demo-secret COOKIE_SECURE=0
 export PYTHONPATH=$PWD
-python -m uvicorn optical_modem.suite.app:app --host 0.0.0.0 --port 8200 --workers 1
+python -m uvicorn optical_modem.suite.app:app --host 127.0.0.1 --port 8200 --workers 1
 ```
 
 State without Docker, three options — all exercised:
@@ -260,7 +408,10 @@ Read by the suite (`optical_modem/suite/app.py`, `registry.py`):
 | `DATA_DIR` | `/data` | root of datasets/runs/models/jobs/sessions |
 | `APP_PASSWORD` | *(required)* | password for `/login` and `/api/login` |
 | `APP_SECRET` | random → `$DATA_DIR/secret.key` | session cookie HMAC |
-| `COOKIE_SECURE` | `1` | `0` for plain HTTP |
+| `COOKIE_SECURE` | `auto` | `auto` \| `1` \| `0`. `auto` = `Secure` when `X-Forwarded-Proto: https`, plain otherwise |
+| `TRUST_PROXY` | `1` | `0` ignores `X-Forwarded-*` (only when the app faces the internet directly) |
+| `FORCE_HTTPS` | `0` | `1` = the app itself 308s plain http to https. Leave `0` behind Traefik |
+| `PUBLIC_URL` | *(unset)* | external origin used for links the UI prints |
 | `SUITE_PYTHON` | `sys.executable` | interpreter used for jobs |
 | `SUITE_MAX_JOBS` | `1` | concurrent jobs (`2` on a big box) |
 | `S2C_DECODE_MODE` | `auto` | `auto` \| `yolo` \| `classical` for every S2C decode |
@@ -270,6 +421,9 @@ Read by the suite (`optical_modem/suite/app.py`, `registry.py`):
 | `SUITE_DB` | `1` | `0` = no database at all (filesystem-only) |
 | `REDIS_URL` | *(unset)* | e.g. `redis://redis:6379/0`; unset = in-process bus |
 | `SUITE_REDIS` | `1` | `0` = force the in-process bus even if `REDIS_URL` is set |
+
+Read by `optical_modem/net.py` (proxy awareness — see §2.2 for the full story):
+`COOKIE_SECURE`, `TRUST_PROXY`, `FORCE_HTTPS`, `PUBLIC_URL`.
 
 Read by the trainer / generator: `--workers`, `--device`, plus the standard
 `OMP_NUM_THREADS`/`MKL_NUM_THREADS`.
@@ -898,6 +1052,21 @@ Each entry: symptom → root cause → fix → test that now guards it.
 * The dead `b64FromHexPlaceholder()` download link in `s2c.js` was replaced by a
   real endpoint: `GET /api/suite/s2c/<id>/payload` (409 until the transfer completes).
 
+### 9.7 "Traefik forces https and then nothing works"
+
+Four bugs with one root cause — the app believed the socket instead of
+`X-Forwarded-Proto` (details and remedies in §2.2): absolute redirects built from
+the http scope, `COOKIE_SECURE=1` on an http socket, a hand-versioned service
+worker (service workers only exist in secure contexts, so this class of bug can
+only appear on https), and `Connection: keep-alive` on the SSE stream. Regression
+tests live in `tests/test_net.py` (26 cases: scheme resolution incl. multi-hop and
+RFC 7239, `TRUST_PROXY=0`, cookie `auto`/`1`/`0`, `FORCE_HTTPS`, relative-Location
+rewriting, `X-Forwarded-Host` → `Host`, build-id stability and stamping, and the
+`diagnose` verdicts — including the "reached directly, no headers is normal" case
+so a laptop deployment is not flagged). `scripts/check_https.py` covers the parts
+a unit test cannot: certificate, real redirect status code, cookie actually
+stored and replayed, SSE actually streaming.
+
 ---
 
 ## 10. Known limitations and the next five things to do
@@ -1035,7 +1204,12 @@ problem; (2) `GET /api/suite/status` → is the active model the one you think?;
 | `404` on `/api/suite/s2c/<id>/frame.png` | more than one uvicorn worker, or the process restarted (transfers are in memory) | run with `--workers 1`; re-transmit after a restart |
 | `409` from a dataset/train POST | a job of that name is still running | poll `/api/jobs/<id>`; the request returns before the job ends |
 | training `failed` in seconds, log stops mid-epoch, message mentions SIGKILL | OOM | lower `batch` (suggested value follows available RAM), then `imgsz` |
-| page loads but every API call `401`s and bounces to `/login` | `COOKIE_SECURE=1` over plain HTTP | set `COOKIE_SECURE=0` for LAN/HTTP, keep `1` behind TLS |
+| page loads but every API call `401`s and bounces to `/login` | a `Secure` cookie over plain HTTP (browser drops it silently) | `COOKIE_SECURE=auto` (the default); if you set `1` by hand, unset it |
+| **`ERR_TOO_MANY_REDIRECTS` only on https** | the app answers a redirect with `http://…` (behind Traefik the socket really is http), Traefik sends it back to https → loop | fixed in code (`net.ProxySchemeMiddleware` rewrites same-host `Location` to a relative path). If it reappears, `curl -sk https://DOMAIN/api/login/ -D -` must print `location: /api/login`, never an absolute `http://` one |
+| **works on http, broken on https** (buttons dead, stale pages, camera page blank) | service worker from an older deploy, or untrusted proxy headers | `python3 scripts/check_https.py --base https://DOMAIN --password …`; hard-reload once; check `COOKIE_SECURE`/`TRUST_PROXY` |
+| login form "does nothing" only when the site is served over https | the proxy answers plain http with **302**, which turns the POST into a GET | use Traefik's `redirectscheme` with `permanent=true` (308 — preserves method and body) |
+| `/api/net/diagnose` says `X-Forwarded-Proto: (absent)` | a second proxy in front of Traefik replaced the header | append, don't replace (`X-Forwarded-Proto: append`); or set `FORCE_HTTPS=1` and `PUBLIC_URL` |
+| live updates (job progress) freeze but a reload catches up | something in the path buffers responses | the SSE endpoint already sends `X-Accel-Buffering: no` and `no-transform`; make sure no proxy middleware buffers `text/event-stream` |
 | phone camera button does nothing | not a secure context | serve over HTTPS (Coolify + domain) |
 | `header:ValueError` in loopback | demodulation, not framing | see §10.1; compare `S2C_DECODE_MODE=classical` |
 | decode works locally, fails from the phone | photo is blurry/downscaled, or the screen shows a resized code | native-size PNG on the display, fill the phone frame, 1080p+ capture, lower `cells` |

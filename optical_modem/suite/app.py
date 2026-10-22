@@ -44,6 +44,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from .. import net
 from ..capture import app as capture_app
 from ..capture.app import MAX_UPLOAD_BYTES, require_auth  # noqa: F401  (re-exported)
 from . import datasets as dsets
@@ -102,6 +103,10 @@ def _s2c() -> S2C:
 
 app = FastAPI(title="Optical modem suite", docs_url=None, redoc_url=None,
               openapi_url=None)
+# TLS terminates at the proxy (Traefik): derive the browser's scheme from
+# X-Forwarded-Proto and keep redirects relative, so https cannot be downgraded
+# into a redirect loop (see optical_modem/net.py)
+net.install(app)
 app.mount("/suite-assets", StaticFiles(directory=str(STATIC)), name="suite-assets")
 
 # --------------------------------------------------------------------------- #
@@ -128,8 +133,8 @@ def _page(name: str) -> HTMLResponse:
     path = STATIC / name
     if not path.exists():                 # pragma: no cover
         raise HTTPException(500, f"missing {name}")
-    return HTMLResponse(path.read_text(),
-                        headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(net.stamp_build(path.read_text()),
+                        headers={"Cache-Control": "no-store"})
 
 
 def _python_argv() -> list[str]:
@@ -236,7 +241,8 @@ def login_page() -> HTMLResponse:
     from ..capture.app import STATIC as CAPTURE_STATIC
 
     path = CAPTURE_STATIC / "index.html"
-    return HTMLResponse(path.read_text(), headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(net.stamp_build(path.read_text()),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/projects", response_class=HTMLResponse)
@@ -318,6 +324,32 @@ def _project_or_404(key: str | int) -> dict:
     if proj is None:
         raise HTTPException(404, f"no project {key}")
     return proj
+
+
+@app.get("/api/suite/diagnose")
+def diagnose(request: Request) -> dict:
+    """Proxy/HTTPS diagnosis, plus the state of the store and the bus.
+
+    Public on purpose: this is the endpoint you open when the app "does not work
+    over https", and that is precisely when you cannot log in.  It leaks nothing
+    (no password, no cookie, no filesystem paths) and every failing check carries
+    the fix in plain words.
+    """
+    out = net.diagnose(request)
+    out["service"] = "optical-modem-suite"
+    out["build"] = net.build_id()
+    db_info: dict = {"kind": "disabled"}
+    if DB is not None:
+        try:
+            DB.counts()
+            db_info = {**DB.info(), "ok": True}
+        except Exception as exc:
+            db_info = {"kind": DB.kind, "ok": False, "error": str(exc)[:200]}
+    out["database"] = db_info
+    out["bus"] = BUS.info()
+    out["pages"] = ["/", "/wizard", "/projects", "/guide", "/dataset", "/train",
+                    "/evaluate", "/models", "/s2c", "/display", "/camera"]
+    return out
 
 
 @app.get("/api/suite/progress", dependencies=[Depends(require_auth)])
@@ -605,7 +637,7 @@ async def event_stream(request: Request):
             unsubscribe()
 
     return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
+                             headers={"Cache-Control": "no-cache, no-transform",
                                       "X-Accel-Buffering": "no"})
 
 
@@ -1131,7 +1163,7 @@ def healthz() -> dict:
         except Exception as exc:
             db_ok, db_info = False, {"kind": DB.kind, "error": str(exc)[:200]}
     return {"ok": db_ok is not False, "service": "optical-modem-suite",
-            "root": str(DATA_DIR),
+            "root": str(DATA_DIR), "build": net.build_id(),
             "sessions": len(capture_app.STORE.list()),
             "datasets": len(REG.list_datasets()),
             "models": len(REG.list_models()),

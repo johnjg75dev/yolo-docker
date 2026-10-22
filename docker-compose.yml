@@ -44,8 +44,20 @@ services:
       # 1 = locate the frame in every capture upload (pure OpenCV, ~0.5-1.5 s)
       AUTOLABEL: ${AUTOLABEL:-1}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-24}
-      # Secure cookies are the default; 0 only for plain-http LAN testing.
-      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      # auto = Secure exactly when the browser is on https (per request, read
+      # from X-Forwarded-Proto). 1 forces Secure (breaks plain-http LAN tests),
+      # 0 never sets it. auto is the only value that is right in both places.
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      # Traefik (Coolify) terminates TLS and forwards plain http to this
+      # container. TRUST_PROXY=1 lets net.py read X-Forwarded-Proto/Host.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # Leave FORCE_HTTPS=0 while the proxy owns the redirect: two redirectors
+      # is how redirect loops start. Set 1 only if this container is exposed
+      # directly to the internet.
+      FORCE_HTTPS: ${FORCE_HTTPS:-0}
+      # The exact origin users type, e.g. https://s2c.example.com. Optional; it
+      # is printed in the UI when the external origin cannot be inferred.
+      PUBLIC_URL: ${PUBLIC_URL:-}
       # Training parallelism: keep it at the container's CPU limit, not the
       # host's, or torch will thrash. The compose limits below say 4.
       OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
@@ -65,10 +77,10 @@ services:
       # back up, one directory to copy to a bigger disk later
       - suite-data:/data
     ports:
-      - "${SUITE_PORT:-8000}:8000"
+      - "${SUITE_PORT:-8889}:8889"
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status==200 else 1)"]
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8889/healthz', timeout=4).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

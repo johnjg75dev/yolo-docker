@@ -25,7 +25,7 @@ bench:              ## run benchmarks -> docs/BENCHMARKS.md
 	$(PY) -m optical_modem bench --n 12
 
 gui:                ## launch the web GUI on :8000
-	$(PY) -m optical_modem gui --port 8000
+	$(PY) -m optical_modem gui --port 8889
 
 render:             ## render one demo frame
 	$(PY) -m optical_modem render --text "hello optical modem" --out frame.png

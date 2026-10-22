@@ -12,9 +12,15 @@ from optical_modem.protocol.packet import FrameHeader
 
 WEIGHTS = Path("models/yolo26n_optical/weights/best.pt")
 
-pytestmark = pytest.mark.skipif(
-    not WEIGHTS.exists(), reason="trained YOLO26 weights not found"
-)
+pytestmark = [
+    pytest.mark.skipif(not WEIGHTS.exists(), reason="trained YOLO26 weights not found"),
+    # the detector imports ultralytics (torch) lazily; a dev box or CI runner
+    # without it should skip these, not error out — nothing here tests the fix
+    pytest.mark.skipif(
+        __import__("importlib").util.find_spec("ultralytics") is None,
+        reason="ultralytics (torch) not installed in this environment",
+    ),
+]
 
 
 def _captures(n=6, level=0.5, seed=0):

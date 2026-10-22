@@ -243,7 +243,7 @@ class Suite:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="end-to-end smoke test of the optical suite")
-    ap.add_argument("--base", default="http://localhost:8000")
+    ap.add_argument("--base", default="http://127.0.0.1:8889")
     ap.add_argument("--password", default=None, help="default: $APP_PASSWORD")
     ap.add_argument("--tag", default=time.strftime("smoke-%H%M"))
     ap.add_argument("--synth-train", type=int, default=40)

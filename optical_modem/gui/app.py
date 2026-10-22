@@ -349,7 +349,7 @@ def download(name: str):
     return Response(p.read_bytes(), media_type="image/png")
 
 
-def main(port: int = 8000, host: str = "0.0.0.0"):
+def main(port: int = 8889, host: str = "127.0.0.1"):
     import uvicorn
 
     uvicorn.run(app, host=host, port=port, log_level="warning")

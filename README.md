@@ -22,6 +22,11 @@ that feeds the demodulator.*
 > first: it is the single document written for whoever (or whatever) picks the
 > project up next — deploy on Coolify, the five pipeline stages, the API contract,
 > the bugs that were fixed and what is still open.
+>
+> Deploying behind Traefik or Coolify over HTTPS? `python3 scripts/check_https.py
+> --base https://YOUR_DOMAIN --password '…'` prints one verdict per step
+> (certificate, http→https redirect, proxy headers, cookie, login, SSE) and
+> every failure comes with its fix. Background: `docs/SUITE_HANDOFF.md` §2.2.
 
 
 ## The short version
@@ -66,7 +71,7 @@ python -m optical_modem send --file README.md --out frames/
 python -m optical_modem bench --n 12
 
 # web GUI  (camera preview + live detection overlay + chat/file transfer)
-python -m optical_modem gui --port 8000
+python -m optical_modem gui --port 8889
 
 # paired capture station: laptop shows codes, phone photographs them
 APP_PASSWORD=secret python -m uvicorn optical_modem.capture.app:app --port 8001

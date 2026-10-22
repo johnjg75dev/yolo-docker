@@ -181,11 +181,65 @@
         "image/jpeg", quality));
   }
 
+  /* --------------------------------------------------- version handshake */
+  /* A deploy must reach the browser, even with a service worker installed:
+   *  - re-register /sw.js with a cache-busting query, so the browser re-fetches
+   *    the (build-stamped) worker instead of trusting the old one;
+   *  - when a new worker takes control, reload once so the page runs the new
+   *    JavaScript instead of the previous release's cached files.
+   * Both are no-ops on plain http (service workers only exist in a secure
+   * context) — which is exactly why a stale shell only ever shows up on https.
+   */
+  function updateServiceWorker() {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js?build=" + Date.now(), { scope: "/" })
+      .then((reg) => { if (reg.update) reg.update().catch(() => {}); })
+      .catch(() => {});
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloaded) return;
+      reloaded = true;
+      const key = "om.reloaded." + location.pathname;
+      try {
+        if (sessionStorage.getItem(key)) return;   // never loop
+        sessionStorage.setItem(key, "1");
+      } catch (e) { /* private mode */ }
+      location.reload();
+    });
+  }
+
+  /** Ask the server which build it is, and reload if it is newer than this page. */
+  async function checkBuild(expected) {
+    try {
+      const res = await fetch("/healthz", { cache: "no-store" });
+      const info = await res.json();
+      if (expected && info.build && info.build !== expected && !window.__buildReload) {
+        window.__buildReload = true;
+        location.reload();
+      }
+      return info;
+    } catch (e) { return null; }
+  }
+
   function deviceName() {
     const ua = navigator.userAgent || "";
     const m = ua.match(/\((.*?)\)/);
     return (m ? m[1] : ua).slice(0, 90);
   }
 
-  window.OM = { API, UI, live, blobFromVideo, blobFromFile, deviceName };
+  updateServiceWorker();
+
+  /* If the tab was rendered by an older build than the one now running, reload
+   * once (guarded, so it cannot loop). This is what makes "docker compose up
+   * --build" reach open browsers — including phones — without a manual refresh.
+   */
+  (function watchBuild() {
+    const meta = document.querySelector('meta[name="om-build"]');
+    const expected = meta && meta.content;
+    if (!expected || expected === "__BUILD__") return;
+    checkBuild(expected);
+  })();
+
+  window.OM = { API, UI, live, blobFromVideo, blobFromFile, deviceName,
+                updateServiceWorker, checkBuild };
 })();

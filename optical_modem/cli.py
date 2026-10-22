@@ -300,8 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_train)
 
     sp = sub.add_parser("gui", help="launch the web GUI")
-    sp.add_argument("--port", type=int, default=8000)
-    sp.add_argument("--host", default="0.0.0.0")
+    sp.add_argument("--port", type=int, default=8889)
+    sp.add_argument("--host", default="127.0.0.1")
     sp.set_defaults(func=cmd_gui)
     return p
 
