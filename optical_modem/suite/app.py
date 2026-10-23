@@ -228,62 +228,16 @@ def _stages(datasets: list[dict], trained: list[dict], active: dict | None) -> l
 
 
 # --------------------------------------------------------------------------- #
-# pages
+# pages — React SPA (client-side routing)
 # --------------------------------------------------------------------------- #
 @app.get("/", response_class=HTMLResponse)
-def home() -> HTMLResponse:
-    return _page("suite.html")
-
-
-@app.get("/login", response_class=HTMLResponse)
-def login_page() -> HTMLResponse:
-    """The capture station's landing page doubles as the suite's sign-in page."""
-    from ..capture.app import STATIC as CAPTURE_STATIC
-
-    path = CAPTURE_STATIC / "index.html"
+def spa_root() -> HTMLResponse:
+    """Serve the React SPA entry point."""
+    path = STATIC / "index.html"
+    if not path.exists():
+        raise HTTPException(500, "missing index.html — run the frontend build")
     return HTMLResponse(net.stamp_build(path.read_text()),
                         headers={"Cache-Control": "no-store"})
-
-
-@app.get("/projects", response_class=HTMLResponse)
-def projects_page() -> HTMLResponse:
-    return _page("projects.html")
-
-
-@app.get("/wizard", response_class=HTMLResponse)
-def wizard_page() -> HTMLResponse:
-    """The guided flow: one stage at a time, with the action inline."""
-    return _page("wizard.html")
-
-
-@app.get("/guide", response_class=HTMLResponse)
-def guide() -> HTMLResponse:
-    return _page("guide.html")
-
-
-@app.get("/dataset", response_class=HTMLResponse)
-def dataset_page() -> HTMLResponse:
-    return _page("dataset.html")
-
-
-@app.get("/train", response_class=HTMLResponse)
-def train_page() -> HTMLResponse:
-    return _page("train.html")
-
-
-@app.get("/evaluate", response_class=HTMLResponse)
-def evaluate_page() -> HTMLResponse:
-    return _page("evaluate.html")
-
-
-@app.get("/models", response_class=HTMLResponse)
-def models_page() -> HTMLResponse:
-    return _page("models.html")
-
-
-@app.get("/s2c", response_class=HTMLResponse)
-def s2c_page() -> HTMLResponse:
-    return _page("s2c.html")
 
 
 # --------------------------------------------------------------------------- #
@@ -1179,3 +1133,20 @@ def version() -> dict:
     from .. import __version__ as v
 
     return {"version": v, "env": describe_env()}
+
+
+@app.get("/{full_path:path}", response_class=HTMLResponse)
+def spa_catchall(full_path: str) -> HTMLResponse:
+    """Catch-all for client-side routing in the React SPA.
+
+    Serves the SPA index.html for any path that doesn't match an API route
+    or a static file.  The React Router handles the actual routing.
+    """
+    # Don't intercept API or static asset requests
+    if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("suite-assets/"):
+        raise HTTPException(404, "not found")
+    path = STATIC / "index.html"
+    if not path.exists():
+        raise HTTPException(500, "missing index.html — run the frontend build")
+    return HTMLResponse(net.stamp_build(path.read_text()),
+                        headers={"Cache-Control": "no-store"})
