@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useToast } from "../components/Toast";
 
 export function Train() {
+  const [architectures, setArchitectures] = useState<any[]>([]);
   const [datasets, setDatasets] = useState<any[]>([]);
   const [dataset, setDataset] = useState("");
   const [name, setName] = useState("");
@@ -13,6 +14,7 @@ export function Train() {
   const [device, setDevice] = useState("");
   const [workers, setWorkers] = useState("");
   const [model, setModel] = useState("");
+  const [customModel, setCustomModel] = useState("");
   const [seed, setSeed] = useState("");
   const [project, setProject] = useState("");
   const [runs, setRuns] = useState<any[]>([]);
@@ -21,13 +23,15 @@ export function Train() {
 
   useEffect(() => {
     api.trainDefaults().then((d) => {
-      setEpochs(String(d.epochs));
-      setImgsz(String(d.imgsz));
-      setBatch(String(d.batch));
-      setDevice(d.device);
-      setWorkers(String(d.workers));
-      setModel(d.model);
-      setSeed(String(d.seed));
+      setArchitectures(d.architectures || []);
+      setDatasets(d.datasets || []);
+      setEpochs(String(d.suggested?.epochs ?? d.epochs ?? 40));
+      setImgsz(String(d.suggested?.imgsz ?? d.imgsz ?? 448));
+      setBatch(String(d.suggested?.batch ?? d.batch ?? 8));
+      setDevice(d.suggested?.device ?? d.device ?? "cpu");
+      setModel(d.suggested?.model ?? d.model ?? "yolo26n-pose.pt");
+      setWorkers(String(d.suggested?.workers ?? d.env?.cpus_available ?? 2));
+      setSeed(String(d.seed ?? 0));
       setProject(d.project);
     }).catch((e) => show(e.message, true));
     api.listDatasets().then(setDatasets).catch((e) => show(e.message, true));
@@ -47,7 +51,7 @@ export function Train() {
         batch: batch ? Number(batch) : undefined,
         device: device || undefined,
         workers: workers ? Number(workers) : undefined,
-        model: model || undefined,
+        model: (customModel.trim() || model) || undefined,
         seed: seed ? Number(seed) : undefined,
         project: project || undefined,
       });
@@ -105,8 +109,19 @@ export function Train() {
               <input type="number" value={workers} onChange={(e) => setWorkers(e.target.value)} />
             </label>
             <label className="field grow">
-              <span>model</span>
-              <input value={model} onChange={(e) => setModel(e.target.value)} />
+              <span>architecture</span>
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                {architectures.map((a: any) => (
+                  <option key={a.name} value={a.name}>
+                    {a.name} — {a.family} {a.size} ({a.notes})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field grow">
+              <span>custom model (override)</span>
+              <input value={customModel} onChange={(e) => setCustomModel(e.target.value)}
+                     placeholder="e.g. yolo26x-pose.pt or /path/to/best.pt" />
             </label>
           </div>
           <div className="row mt">

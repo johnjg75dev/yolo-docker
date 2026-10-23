@@ -39,7 +39,7 @@ import time
 from pathlib import Path
 
 from fastapi import (Depends, FastAPI, Form, HTTPException, Request, Response,
-                     UploadFile)
+                     UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -395,6 +395,44 @@ def _label_image(img, spec) -> dict:
     return out
 
 
+@app.post("/api/sessions/{sid}/peek", dependencies=[Depends(require_auth)])
+async def peek_frame(sid: str, file: UploadFile = File(...),
+                     width: int = Form(0), height: int = Form(0)) -> dict:
+    """Probe a candidate photo: does it contain the current frame's code?
+
+    Does NOT store the shot. Used by the phone's autonomous capture mode to
+    decide whether to fire the shutter. Returns a compact verdict so the
+    phone can poll cheaply (downscaled JPEGs are fine).
+    """
+    sess = require_session(sid)
+    if sess.done:
+        return {"found": False, "reason": "session complete"}
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"over {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    try:
+        img = await run_in_threadpool(_decode_upload, raw)
+    except HTTPException:
+        raise
+    spec = sess.spec(sess.index)
+    try:
+        out = await run_in_threadpool(label_photo, img, spec)
+    except Exception as exc:        # pragma: no cover - defensive
+        return {"found": False, "error": f"{type(exc).__name__}: {exc}"}
+    found = bool(out.get("found"))
+    verified = bool(out.get("verified"))
+    return {
+        "found": found,
+        "verified": verified,
+        "score": float(out.get("score", 0.0) or 0.0),
+        "candidates": int(out.get("candidates", 0) or 0),
+        "index": int(sess.index),
+        "auto_ok": bool(found and verified),
+    }
+
+
 @app.post("/api/sessions/{sid}/reject", dependencies=[Depends(require_auth)])
 async def reject(sid: str) -> dict:
     sess = require_session(sid)
@@ -465,6 +503,47 @@ async def events(sid: str, request: Request, role: str | None = None):
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.websocket("/ws/sessions/{sid}")
+async def ws_session(websocket: WebSocket, sid: str, role: str | None = None):
+    token = websocket.cookies.get(COOKIE_NAME, "")
+    if not _verify(token):
+        await websocket.close(code=4401)
+        return
+    try:
+        sess = require_session(sid)
+    except HTTPException:
+        await websocket.close(code=4404)
+        return
+    if role in ("display", "camera"):
+        STORE.touch_role(sess, role)
+
+    await websocket.accept()
+    queue = STORE.subscribe(sid)
+    try:
+        await websocket.send_json({"event": "state", "data": sess.snapshot(role=role)})
+        last_ping = time.time()
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                item = None
+            if item is not None:
+                await websocket.send_json({"event": item["event"], "data": item["data"]})
+                last_ping = time.time()
+            elif time.time() - last_ping > 14.0:
+                await websocket.send_json({"event": "ping", "data": {}})
+                last_ping = time.time()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        STORE.unsubscribe(sid, queue)
 
 
 # --------------------------------------------------------------------------- #

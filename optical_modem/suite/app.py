@@ -766,7 +766,30 @@ def train_defaults() -> dict:
         # a checkpoint that shipped with the image needs no download and starts
         # from a frame detector instead of COCO people: much faster convergence
         "bundled_bases": REG.bundled_bases(),
-        "base_models": (["yolo26n-pose.pt", "yolo26s-pose.pt", "yolo26m-pose.pt"]),
+        "base_models": (["yolo26n-pose.pt", "yolo26s-pose.pt", "yolo26m-pose.pt",
+                        "yolo26l-pose.pt", "yolo26x-pose.pt",
+                        "yolo11n-pose.pt", "yolo11s-pose.pt",
+                        "yolov8n-pose.pt"]),
+        "architectures": [
+            {"name": "yolo26n-pose.pt", "family": "YOLO26", "size": "nano",
+             "notes": "fastest, bundled base; best for CPU"},
+            {"name": "yolo26s-pose.pt", "family": "YOLO26", "size": "small",
+             "notes": "balanced speed/accuracy"},
+            {"name": "yolo26m-pose.pt", "family": "YOLO26", "size": "medium",
+             "notes": "higher accuracy, needs GPU"},
+            {"name": "yolo26l-pose.pt", "family": "YOLO26", "size": "large",
+             "notes": "high accuracy, heavy"},
+            {"name": "yolo26x-pose.pt", "family": "YOLO26", "size": "xlarge",
+             "notes": "max accuracy"},
+            {"name": "yolo11n-pose.pt", "family": "YOLO11", "size": "nano",
+             "notes": "alternate backbone"},
+            {"name": "yolo11s-pose.pt", "family": "YOLO11", "size": "small",
+             "notes": "alternate backbone"},
+            {"name": "yolov8n-pose.pt", "family": "YOLOv8", "size": "nano",
+             "notes": "legacy compatible"},
+            {"name": "custom", "family": "Custom", "size": "any",
+             "notes": "type any ultralytics model name or .pt path"},
+        ],
         "active": REG.active(),
     }
 

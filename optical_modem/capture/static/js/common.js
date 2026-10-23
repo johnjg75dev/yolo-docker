@@ -104,6 +104,37 @@
 
     function connect() {
       if (closed) return;
+      // Prefer WebSocket when available: cheaper on mobile radios and bidirectional.
+      if (typeof WebSocket !== "undefined") {
+        try {
+          const proto = location.protocol === "https:" ? "wss:" : "ws:";
+          const url = proto + "//" + location.host + "/ws/sessions/" + sessionId + "?role=" + encodeURIComponent(role);
+          const ws = new WebSocket(url);
+          ws.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg && msg.data) handle(msg.data);
+            } catch (e) {}
+          };
+          ws.onopen = () => { last = Date.now(); };
+          ws.onerror = () => { try { ws.close(); } catch (e) {} };
+          ws.onclose = () => {
+            if (closed) return;
+            // fall back to SSE/polling
+            es = null;
+            if (typeof EventSource === "undefined") { startPolling(); return; }
+            trySSE();
+          };
+          // store for close()
+          es = { close() { try { ws.close(); } catch (e) {} } };
+          return;
+        } catch (e) { /* fall through */ }
+      }
+      trySSE();
+    }
+
+    function trySSE() {
+      if (closed) return;
       if (typeof EventSource === "undefined") { startPolling(); return; }
       const url = `/api/sessions/${sessionId}/events?role=${role}`;
       es = new EventSource(url, { withCredentials: true });
@@ -124,12 +155,10 @@
       });
       es.onerror = () => {
         if (onError) onError();
-        // EventSource reconnects on its own; if it stays dead, poll
         setTimeout(() => {
           if (!closed && Date.now() - last > 6000) startPolling();
         }, 3000);
       };
-      // safety net: if nothing arrives for a while, poll once
       setTimeout(() => {
         if (!closed && Date.now() - last > 6000) startPolling();
       }, 7000);

@@ -9,6 +9,7 @@ import { Datasets } from "./pages/Datasets";
 import { Train } from "./pages/Train";
 import { Projects } from "./pages/Projects";
 import { Capture } from "./pages/Capture";
+import { Settings } from "./pages/Settings";
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { authed, checking } = useAuth();
@@ -82,6 +83,14 @@ export function App() {
           element={
             <AuthRoute>
               <Capture />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <AuthRoute>
+              <Settings />
             </AuthRoute>
           }
         />

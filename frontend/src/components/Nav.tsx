@@ -20,6 +20,7 @@ export function Nav() {
       {link("/train", "Train")}
       {link("/projects", "Projects")}
       {link("/capture", "Capture")}
+      {link("/settings", "Settings")}
       <span style={{ flex: 1 }} />
       {authed ? (
         <button className="secondary" onClick={logout}>

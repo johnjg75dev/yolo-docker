@@ -3,7 +3,6 @@ import type {
   S2CTransfer,
   S2CResult,
   Run,
-  TrainDefaults,
   StartTrainPayload,
   Project,
   CaptureStatus,
@@ -103,7 +102,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  trainDefaults: () => request<TrainDefaults>("/suite/train/defaults"),
+  trainDefaults: () => request<any>("/suite/train/defaults"),
 
   listProjects: () => request<{ projects: any[] }>("/suite/projects").then((r) => r.projects || []),
   createProject: (name: string) =>

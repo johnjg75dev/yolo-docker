@@ -21,6 +21,11 @@
   let useFileInput = false;
   let busy = false;
   let lastIndexUploaded = -1;
+  let autoMode = false;
+  let dataSaver = false;
+  let maxDim = 1280;
+  let autoTimer = null;
+  let lastPeek = 0;
   //: what the status line says when nothing is happening (differs when the
   //: page has no live stream and has to fall back to the system camera)
   let idleMessage = "point the phone at the laptop screen";
@@ -176,17 +181,58 @@
     if (useFileInput) { $("#file-input").click(); return; }
     try {
       const video = $("#video");
-      const blob = await blobFromVideo(video);
+      const edge = dataSaver ? Math.min(maxDim, 960) : maxDim;
+      const q = dataSaver ? 0.7 : 0.92;
+      const blob = await blobFromVideo(video, edge, q);
       await upload(blob, "getusermedia", video.videoWidth, video.videoHeight);
     } catch (e) {
       UI.toast(e.message || "capture failed", true);
     }
   }
 
+  async function autoTick() {
+    if (!autoMode || busy || !state || state.done || useFileInput) return;
+    const now = Date.now();
+    if (now - lastPeek < 900) return;
+    lastPeek = now;
+    const video = $("#video");
+    if (!video.videoWidth) return;
+    try {
+      const edge = dataSaver ? Math.min(maxDim, 640) : 960;
+      const blob = await blobFromVideo(video, edge, 0.6);
+      const form = new FormData();
+      form.append("file", blob, "peek.jpg");
+      form.append("index", String(state.index));
+      const res = await API.postForm(`/api/sessions/${sessionId}/peek`, form);
+      if (res && res.auto_ok) {
+        // found & verified -> capture for real
+        await shoot();
+      } else if (res && res.found) {
+        $("#status-line").textContent = "code seen (" + (res.score || 0).toFixed(2) + ") — refining…";
+      }
+    } catch (e) {
+      // ignore peek errors; keep sampling
+    }
+  }
+
   /* ---------------- wiring ---------------- */
+  $("#btn-auto")?.addEventListener("click", () => {
+    autoMode = !autoMode;
+    $("#btn-auto").textContent = "auto: " + (autoMode ? "on" : "off");
+    if (autoMode) {
+      if (!autoTimer) autoTimer = setInterval(autoTick, 1000);
+      UI.toast("autonomous capture on — set the phone down");
+    } else {
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      UI.toast("autonomous capture off");
+    }
+  });
+  $("#btn-datasaver")?.addEventListener("click", () => {
+    dataSaver = !dataSaver;
+    $("#btn-datasaver").textContent = "data saver: " + (dataSaver ? "on" : "off");
+  });
   $("#shutter").addEventListener("click", shoot);
   $("#btn-undo").addEventListener("click", async () => {
-    if (!sessionId) return;
     try {
       const snap = await API.post(`/api/sessions/${sessionId}/reject`, {});
       if (snap && snap.id) render(snap);
