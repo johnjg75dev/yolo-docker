@@ -69,5 +69,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 
 # ONE worker: sessions, jobs and transfers live in this process
 CMD ["python", "-m", "uvicorn", "optical_modem.suite.app:app", \
-     "--host", "0.0.0.0", "--port", "8889", "--workers", "2", \
+     "--host", "0.0.0.0", "--port", "8889", "--workers", "1", \
      "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]
