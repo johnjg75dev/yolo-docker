@@ -40,6 +40,7 @@ from typing import Any
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Query, Request,
                      Response, UploadFile)
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
@@ -105,6 +106,19 @@ def _s2c() -> S2C:
 
 app = FastAPI(title="Optical modem suite", docs_url=None, redoc_url=None,
               openapi_url=None)
+
+# CORS: allow the frontend (possibly on a different subdomain) to call this API
+# with cookies.  Origins come from CORS_ORIGINS (comma-separated); when unset we
+# reflect any origin so a self-hosted deployment works without configuration.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_origin_regex=".*" if not _cors_origins else None,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # TLS terminates at the proxy (Traefik): derive the browser's scheme from
 # X-Forwarded-Proto and keep redirects relative, so https cannot be downgraded
 # into a redirect loop (see optical_modem/net.py)

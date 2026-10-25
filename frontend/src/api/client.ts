@@ -8,7 +8,7 @@ import type {
   CaptureStatus,
 } from "../types";
 
-const BASE = "/api";
+const BASE = (import.meta as any).env?.VITE_API_BASE || (window as any).__API_BASE__ || "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -89,7 +89,7 @@ export const api = {
     });
   },
 
-  s2cDownload: (tid: string) => `/api/suite/s2c/${encodeURIComponent(tid)}/payload`,
+  s2cDownload: (tid: string) => `${BASE}/suite/s2c/${encodeURIComponent(tid)}/payload`,
 
   listDatasets: () => request<{ datasets: any[] }>("/suite/datasets").then((r) => r.datasets || []),
   deleteDataset: (name: string) =>

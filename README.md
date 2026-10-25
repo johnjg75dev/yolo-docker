@@ -323,6 +323,36 @@ is already on the volume, so an older `/data` appears populated instead of empty
 
 ---
 
+## API subdomain (optional)
+
+To serve all APIs from `api.alphabitlabs.com` with a per-project path prefix
+(e.g. `https://api.alphabitlabs.com/yolo/v1/healthz`), configure Caddy (Coolify
+manages it) to strip the prefix and proxy to the suite container:
+
+```
+api.alphabitlabs.com {
+    handle_path /yolo/v1/* {
+        reverse_proxy suite:8889
+    }
+}
+```
+
+Then point the frontend at the subdomain by rebuilding with the API base:
+
+```
+VITE_API_BASE=https://api.alphabitlabs.com/yolo/v1/api npm run build
+```
+
+and set `CORS_ORIGINS=https://<your-frontend-domain>` on the `suite` service so
+the browser allows credentialed cross-origin calls. Cookies stay `SameSite=Lax`,
+which is sufficient for subdomains of the same registrable domain.
+
+The suite container itself does not need to know its public prefix: Caddy strips
+`/yolo/v1` and the app keeps serving `/api/*`, `/healthz`, `/version` (the
+last two are restricted to internal peers).
+
+---
+
 ## Limitations & next steps
 
 * **Localisation is the current bottleneck, not demodulation.** With a perfect
