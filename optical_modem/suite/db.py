@@ -27,6 +27,14 @@ import json
 import os
 import time
 from contextlib import contextmanager
+
+try:
+    from .logging_config import configure as _configure_logging, get_logger as _get_logger
+    _configure_logging()
+    log = _get_logger("suite.db")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("suite.db")
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -496,6 +504,7 @@ class Store:
 
     # ---- runs / models ---------------------------------------------------
     def upsert_run(self, name: str, **fields) -> dict:
+        log.debug("db upsert_run name=%s fields=%s", name, list(fields.keys()))
         with self.session() as s:
             row = s.scalar(select(Run).where(Run.name == name))
             if row is None:
@@ -589,6 +598,7 @@ class Store:
 
     # ---- jobs ------------------------------------------------------------
     def record_job(self, job: dict, project_id: int | None = None) -> dict:
+        log.debug("db record_job id=%s status=%s", job.get("id"), job.get("status"))
         """Insert or update the row for a job snapshot."""
         with self.session() as s:
             jid = str(job["id"])
@@ -636,6 +646,7 @@ class Store:
             return row.as_dict() if row else None
 
     def delete_job(self, jid: str) -> bool:
+        log.debug("db delete_job id=%s", jid)
         with self.session() as s:
             row = s.get(JobRecord, jid)
             if row is None:

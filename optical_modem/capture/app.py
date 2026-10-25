@@ -46,6 +46,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .. import net
+try:
+    from ..suite.logging_config import configure as _configure_logging, get_logger as _get_logger
+    _configure_logging()
+    log = _get_logger("capture.app")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("capture.app")
 from ..config import MODULATIONS
 from .sessions import (DEFAULT_RESOLUTION, Session, SessionStore, label_photo)
 
@@ -128,6 +135,7 @@ def _password_ok(given: str) -> bool:
 
 async def require_auth(request: Request) -> None:
     if not _verify(request.cookies.get(COOKIE_NAME, "")):
+        log.debug("auth required (no/invalid cookie) path=%s", request.url.path)
         raise HTTPException(401, "login required")
 
 
@@ -232,12 +240,15 @@ async def login(request: Request, response: Response, payload: dict) -> dict:
     now = time.time()
     hits = [t for t in _ATTEMPTS.get(ip, []) if now - t < 60.0]
     if len(hits) >= 10:
+        log.warning("login rate-limited ip=%s", ip)
         raise HTTPException(429, "too many attempts, wait a minute")
     if not _password_ok(str(payload.get("password", ""))):
         _ATTEMPTS[ip] = hits + [now]
+        log.warning("login FAILED ip=%s", ip)
         raise HTTPException(401, "wrong password")
     _ATTEMPTS.pop(ip, None)
     token = _sign(str(now))
+    log.info("login OK ip=%s", ip)
     # Secure is derived from the *browser's* scheme (X-Forwarded-Proto), not from
     # the plain-HTTP socket this process sees: behind Traefik that socket is
     # always http, and a Secure cookie sent over plain http is silently dropped

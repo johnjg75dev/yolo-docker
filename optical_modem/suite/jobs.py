@@ -31,6 +31,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    from .logging_config import configure as _configure_logging, get_logger as _get_logger
+    _configure_logging()
+    log = _get_logger("suite.jobs")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("suite.jobs")
+
 #: states a job can be in
 QUEUED, RUNNING, OK, FAILED, CANCELLED, INTERRUPTED = (
     "queued", "running", "ok", "failed", "cancelled", "interrupted")
@@ -266,6 +274,7 @@ class JobManager:
             self._order.insert(0, jid)
             self._save(job)
         self._emit("job.queued", job)
+        log.info("job queued id=%s kind=%s title=%s", jid, kind, title)
         if self.run_inprocess:
             self._spawn(job, cwd)
         return job
@@ -291,6 +300,7 @@ class JobManager:
             self._procs[job.id] = proc
             self._save(job)
         self._emit("job.started", job)
+        log.info("job started id=%s pid=%s", job.id, proc.pid)
         t = threading.Thread(target=self._monitor, args=(job, proc, log),
                              name=f"job-{job.id}", daemon=True)
         self._threads[job.id] = t
@@ -326,6 +336,7 @@ class JobManager:
             job.metrics.update(metrics)
             self._save(job)
         self._emit("job.finished" if job.status == OK else "job.failed", job)
+        log.info("job finished id=%s status=%s metrics=%s", job.id, job.status, job.metrics)
 
     def get(self, jid: str) -> Job | None:
         with self._lock:
@@ -362,6 +373,9 @@ class JobManager:
             d["progress"] = max(job.progress, prog)
             d["message"] = msg or job.message
             d["metrics"] = {**job.metrics, **metrics}
+            if msg and getattr(self, "_last_log_msg", {}).get(jid) != msg:
+                self.setdefault("_last_log_msg", {})[jid] = msg
+                log.info("job %s: %s %s", jid, msg, metrics if metrics else "")
         return d
 
     def cancel(self, jid: str) -> Job | None:
@@ -375,6 +389,7 @@ class JobManager:
             job.message = "cancelled"
             self._save(job)
         self._emit("job.cancelled", job)
+        log.info("job cancelled id=%s", jid)
         if proc is not None and proc.poll() is None:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -502,6 +517,7 @@ class JobManager:
                 self.store.delete_job(jid)
             except Exception:
                 pass
+        log.info("job deleted id=%s", jid)
         return job is not None
 
     def log_file(self, jid: str) -> Path:

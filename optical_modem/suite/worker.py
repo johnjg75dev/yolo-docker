@@ -23,6 +23,14 @@ if str(HERE) not in sys.path:
 
 from optical_modem.suite.jobs import JobManager, QUEUED, LIVE
 
+try:
+    from optical_modem.suite.logging_config import configure as _configure_logging, get_logger as _get_logger
+    _configure_logging()
+    log = _get_logger("suite.worker")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("suite.worker")
+
 
 def main() -> None:
     data_dir = Path(os.environ.get("DATA_DIR", "/data")).resolve()
@@ -54,6 +62,7 @@ def main() -> None:
         pass
 
     print(f"[worker] started; data_dir={data_dir} max_concurrent={max_concurrent}", flush=True)
+    log.info("worker started data_dir=%s max_concurrent=%s", data_dir, max_concurrent)
     while True:
         try:
             jm.adopt_from_store()
@@ -64,6 +73,7 @@ def main() -> None:
                     if len([j for j in jm.list() if j.status in LIVE]) >= max_concurrent:
                         break
                     print(f"[worker] spawning {job.id}", flush=True)
+                    log.info("worker spawning job id=%s", job.id)
                     jm._spawn(job, cwd=project_root)
             # heartbeat all live jobs
             for job in live:

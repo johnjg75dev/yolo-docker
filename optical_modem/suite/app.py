@@ -39,6 +39,10 @@ from pathlib import Path
 from PIL import Image
 from typing import Any
 
+from .logging_config import configure as _configure_logging, get_logger as _get_logger
+_configure_logging()
+log = _get_logger("suite.app")
+
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Query, Request,
                      Response, UploadFile)
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,6 +75,7 @@ DB = get_store()
 #: Messaging (job events, expiring locks).  Redis when REDIS_URL is set, else an
 #: in-process bus that behaves the same for the single-worker topology.
 BUS = get_bus()
+log.info("suite boot data_dir=%s db=%s bus=%s run_jobs=%s max_jobs=%s", DATA_DIR, "on" if DB is not None else "off", type(BUS).__name__, os.environ.get("SUITE_RUN_JOBS", "inprocess"), os.environ.get("SUITE_MAX_JOBS", "1"))
 JOBS = JobManager(DATA_DIR, project_root=PROJECT_ROOT,
                   python=os.environ.get("SUITE_PYTHON") or None,
                   max_concurrent=int(os.environ.get("SUITE_MAX_JOBS", "1")),
@@ -85,6 +90,7 @@ if DB is not None:                       # import artefacts that predate the DB
         JOBS.adopt_from_store()
     except Exception as exc:             # never let a bad DB stop the app booting
         print(f"[suite] database sync skipped: {exc}", flush=True)
+        log.warning("database sync skipped: %s", exc)
 
 S2C_MAX_FRAMES = int(os.environ.get("S2C_MAX_FRAMES", "64"))
 
@@ -977,6 +983,7 @@ async def start_training(payload: dict) -> dict:
         "--patience", str(patience), "--early-stop-start", str(early_stop_start), 
     ] 
     project = _known_project(payload.get("project")) 
+    log.info("training started run=%s dataset=%s epochs=%s imgsz=%s batch=%s", name, dataset, epochs, imgsz, batch)
     job = JOBS.start("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv, 
                      meta={"run": name, "dataset": dataset, "epochs": epochs, 
                            "imgsz": imgsz, "project": project, 
@@ -1240,6 +1247,7 @@ def job(jid: str, lines: int = 120) -> dict:
 
 @app.post("/api/jobs/{jid}/pause", dependencies=[Depends(require_auth)])
 def pause_job(jid: str) -> dict:
+    log.info("job pause id=%s", jid)
     job_ = JOBS.get(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
@@ -1258,6 +1266,7 @@ def pause_job(jid: str) -> dict:
 
 @app.post("/api/jobs/{jid}/resume", dependencies=[Depends(require_auth)])
 def resume_job(jid: str) -> dict:
+    log.info("job resume id=%s", jid)
     job_ = JOBS.get(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
@@ -1274,6 +1283,7 @@ def resume_job(jid: str) -> dict:
     return job_.as_dict()
 @app.post("/api/jobs/{jid}/cancel", dependencies=[Depends(require_auth)])
 def cancel_job(jid: str) -> dict:
+    log.info("job cancel id=%s", jid)
     job_ = JOBS.cancel(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
@@ -1282,6 +1292,7 @@ def cancel_job(jid: str) -> dict:
 
 @app.delete("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
 def delete_job(jid: str) -> dict:
+    log.info("job delete id=%s", jid)
     ok = JOBS.delete(jid)
     if not ok:
         raise HTTPException(404, "no such job")

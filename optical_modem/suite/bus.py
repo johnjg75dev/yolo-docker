@@ -31,6 +31,14 @@ import uuid
 from collections import deque
 from typing import Any, Callable
 
+try:
+    from .logging_config import configure as _configure_logging, get_logger as _get_logger
+    _configure_logging()
+    log = _get_logger("suite.bus")
+except Exception:  # pragma: no cover
+    import logging
+    log = logging.getLogger("suite.bus")
+
 try:                                     # pragma: no cover - exercised via tests
     import redis as _redis
 except Exception:                        # pragma: no cover
@@ -57,6 +65,7 @@ class LocalBus:
     # ---- events ----------------------------------------------------------
     def publish(self, event: dict) -> None:
         event = {"ts": time.time(), **event}
+        log.debug("bus publish kind=%s subject=%s", event.get("kind"), event.get("subject"))
         with self._lock:
             self._recent.append(event)
             subs = list(self._subs)
@@ -178,8 +187,8 @@ class RedisBus(LocalBus):
             pipe.lpush(EVENTS_KEY, payload)
             pipe.ltrim(EVENTS_KEY, 0, max(0, self._kept - 1))
             pipe.execute()
-        except Exception:
-            pass                                     # local bus already has it
+        except Exception as e:
+            log.warning("redis publish failed: %s", e)
 
     @property
     def _kept(self) -> int:
