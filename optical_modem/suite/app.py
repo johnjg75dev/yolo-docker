@@ -31,6 +31,7 @@ Design notes
 from __future__ import annotations
 
 import io
+import ipaddress
 import json
 import os
 import time
@@ -1148,8 +1149,28 @@ def export_manifest() -> JSONResponse:
     return JSONResponse(state)
 
 
-@app.get("/healthz")
-def healthz() -> dict:
+def _require_internal(request: Request) -> None:
+    peer = request.client.host if request.client else ""
+    xff = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    # Block direct internet access (public peer) and proxied public clients.
+    try:
+        peer_addr = ipaddress.ip_address(peer) if peer else None
+    except ValueError:
+        peer_addr = None
+    peer_ok = peer_addr is not None and (peer_addr.is_loopback or peer_addr.is_private or peer_addr.is_reserved)
+    xff_public = False
+    if xff:
+        try:
+            xa = ipaddress.ip_address(xff)
+            xff_public = not (xa.is_loopback or xa.is_private or xa.is_reserved)
+        except ValueError:
+            xff_public = True
+    if not peer_ok or xff_public:
+        raise HTTPException(404, "not found")
+
+
+@app.get("/healthz", dependencies=[Depends(_require_internal)])
+def healthz(request: Request) -> dict:
     """Liveness + a summary the compose healthcheck and Coolify can read."""
     # The database is part of the health contract: a container whose store is
     # unreachable must fail its healthcheck rather than serve broken pages.

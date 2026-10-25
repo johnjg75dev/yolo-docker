@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import { useToast } from "../components/Toast";
 
 export function Home() {
-  const [health, setHealth] = useState<any>(null);
   const [runs, setRuns] = useState<any[]>([]);
   const [datasets, setDatasets] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
-  const { show } = useToast();
 
   useEffect(() => {
-    api.health().then(setHealth).catch((e) => show(e.message, true));
     api.listRuns().then(setRuns).catch(() => {});
     api.listDatasets().then(setDatasets).catch(() => {});
     api.listProjects().then(setProjects).catch(() => {});
@@ -35,12 +31,7 @@ export function Home() {
       </div>
 
       <div className="card" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <span className={"pill " + (health ? "ok" : "run")}>{health ? "healthy" : "checking..."}</span>
-        {health && (
-          <span className="mono small" style={{ color: "var(--muted)" }}>
-            {health.service || "suite"} - build {health.build || "?"}
-          </span>
-        )}
+        <span className="pill ok">suite</span>
         <span style={{ flex: 1 }} />
       </div>
 
