@@ -1193,7 +1193,7 @@ def healthz(request: Request) -> dict:
             "bus": BUS.info()}
 
 
-@app.get("/version")
+@app.get("/version", dependencies=[Depends(_require_internal)])
 def version() -> dict:
     from .. import __version__ as v
 
