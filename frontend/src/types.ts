@@ -94,6 +94,9 @@ export interface StartTrainPayload {
   model?: string;
   seed?: number;
   project?: string;
+  patience?: number;
+  early_stop_start?: number;
+  eval_every?: number;
 }
 
 export interface Project {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useToast } from "../components/Toast";
 
@@ -51,6 +52,9 @@ export function Datasets() {
                   <td className="small">{d.created_at}</td>
                   <td>
                     <button className="danger" onClick={() => handleDelete(d.name)}>delete</button>
+                    <Link to={`/datasets/edit/${encodeURIComponent(d.name)}`} style={{ marginLeft: 8 }}>
+                      <button className="secondary">edit labels</button>
+                    </Link>
                   </td>
                 </tr>
               ))}

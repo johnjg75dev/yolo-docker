@@ -92,12 +92,34 @@ export const api = {
   s2cDownload: (tid: string) => `${BASE}/suite/s2c/${encodeURIComponent(tid)}/payload`,
 
   listDatasets: () => request<{ datasets: any[] }>("/suite/datasets").then((r) => r.datasets || []),
+  datasetImages: (name: string, split = "train", limit = 200, offset = 0) =>
+    request<{ split: string; total: number; images: string[] }>(
+      `/suite/datasets/${encodeURIComponent(name)}/images?split=${encodeURIComponent(split)}&limit=${limit}&offset=${offset}`
+    ),
+  datasetImageUrl: (name: string, split: string, filename: string) =>
+    `${BASE}/suite/datasets/${encodeURIComponent(name)}/image/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`,
+  datasetLabel: (name: string, split: string, filename: string) =>
+    request<any>(`/suite/datasets/${encodeURIComponent(name)}/label/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`),
+  saveDatasetLabel: (name: string, split: string, filename: string, payload: any) =>
+    request<any>(`/suite/datasets/${encodeURIComponent(name)}/label/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   deleteDataset: (name: string) =>
     request<{ ok: boolean }>(`/suite/datasets/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
 
   listRuns: () => request<{ runs: any[]; active: any }>("/suite/runs").then((r) => r.runs),
+  extendRun: (name: string, payload: any) =>
+    request<any>(`/suite/runs/${encodeURIComponent(name)}/extend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    }),
+  runImages: (name: string) => request<{ run: string; images: string[] }>(`/suite/runs/${encodeURIComponent(name)}/images`),
+  runImageUrl: (name: string, filename: string) => `${BASE}/suite/runs/${encodeURIComponent(name)}/image/${encodeURIComponent(filename)}`,
   getRun: (id: string) => request<Run>(`/suite/runs/${encodeURIComponent(id)}`),
   startTrain: (payload: StartTrainPayload) =>
     request<{ job: any; run: string }>("/suite/train", {
@@ -124,6 +146,8 @@ export const api = {
   },
   getJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}`),
   cancelJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/cancel`, { method: "POST" }),
+  pauseJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/pause`, { method: "POST" }),
+  resumeJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/resume`, { method: "POST" }),
   captureStart: (port?: number) =>
     request<CaptureStatus>("/capture/start", {
       method: "POST",

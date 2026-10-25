@@ -170,6 +170,12 @@ export function S2C() {
               {rxResult.complete ? "complete" : "partial"}
             </span>
             <p className="small mt">ok: {String(rxResult.ok)}</p>
+            {rxResult.complete && (
+              <p className="small mt">
+                Captured images can now be labeled in the{" "}
+                <a href="/datasets">Dataset editor</a>.
+              </p>
+            )}
           </div>
         )}
       </div>

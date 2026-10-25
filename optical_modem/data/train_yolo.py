@@ -30,7 +30,17 @@ def train(args) -> Path:
     from ultralytics import YOLO
 
     t0 = time.time()
+    patience = args.patience if getattr(args, "patience", 0) else max(5, args.epochs // 3)
+    early_stop_start = getattr(args, "early_stop_start", 0) or 0
+
+    def _delay_early_stop(trainer):
+        if early_stop_start and (trainer.epoch + 1) < early_stop_start:
+            trainer.args.patience = args.epochs
+        else:
+            trainer.args.patience = patience
+
     model = YOLO(args.model)
+    model.add_callback("on_train_epoch_end", _delay_early_stop)
     res = model.train(
         data=args.data,
         epochs=args.epochs,
@@ -43,8 +53,9 @@ def train(args) -> Path:
         exist_ok=True,
         seed=args.seed,
         val=True,
-        plots=False,
+        plots=True,
         verbose=True,
+        patience=patience,
         # augmentation tuned for a rigid, square target: keep rotation/scale,
         # avoid extreme perspective shears that cannot occur on a screen
         degrees=25.0,
@@ -61,7 +72,6 @@ def train(args) -> Path:
         hsv_h=0.02,
         hsv_s=0.4,
         hsv_v=0.5,
-        patience=max(5, args.epochs // 3),
     )
     best = Path(args.project) / args.name / "weights" / "best.pt"
     card = {
@@ -110,6 +120,10 @@ def main(argv=None):
     ap.add_argument("--project", default=str(here / "models"))
     ap.add_argument("--name", default="yolo26_optical")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--patience", type=int, default=0,
+                    help="early-stopping patience (epochs); 0 = auto")
+    ap.add_argument("--early-stop-start", type=int, default=0, dest="early_stop_start",
+                    help="do not apply early stopping before this epoch")
     args = ap.parse_args(argv)
     os.environ.setdefault("YOLO_OFFLINE", "1")
     best = train(args)

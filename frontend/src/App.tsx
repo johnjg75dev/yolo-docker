@@ -10,6 +10,7 @@ import { Train } from "./pages/Train";
 import { Projects } from "./pages/Projects";
 import { Capture } from "./pages/Capture";
 import { Settings } from "./pages/Settings";
+import { DatasetEditor } from "./pages/DatasetEditor";
 import { Jobs } from "./pages/Jobs";
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
@@ -101,6 +102,14 @@ export function App() {
           element={
             <AuthRoute>
               <Jobs />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/datasets/edit/:name"
+          element={
+            <AuthRoute>
+              <DatasetEditor />
             </AuthRoute>
           }
         />

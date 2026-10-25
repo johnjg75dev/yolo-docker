@@ -775,6 +775,78 @@ def dataset_preview(name: str, split: str = "train", index: int = 0) -> Response
                     headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/api/suite/datasets/{name}/images", dependencies=[Depends(require_auth)])
+def dataset_images(name: str, split: str = "train", limit: int = 200, offset: int = 0) -> dict:
+    p = REG.dataset_dir(name) / "images" / split
+    if not p.is_dir():
+        return {"images": [], "split": split, "total": 0}
+    files = sorted(f.name for f in p.iterdir()
+                   if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"))
+    total = len(files)
+    page = files[offset: offset + limit]
+    return {"split": split, "total": total, "images": page}
+
+
+@app.get("/api/suite/datasets/{name}/image/{split}/{filename}", dependencies=[Depends(require_auth)])
+def dataset_image(name: str, split: str, filename: str) -> Response:
+    path = REG.dataset_dir(name) / "images" / split / filename
+    if not path.is_file():
+        raise HTTPException(404, "no such image")
+    data = path.read_bytes()
+    media = "image/jpeg"
+    if path.suffix.lower() == ".png":
+        media = "image/png"
+    elif path.suffix.lower() == ".webp":
+        media = "image/webp"
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/api/suite/datasets/{name}/label/{split}/{filename}", dependencies=[Depends(require_auth)])
+def dataset_label(name: str, split: str, filename: str) -> dict:
+    label_path = REG.dataset_dir(name) / "labels" / split / (Path(filename).stem + ".txt")
+    text = label_path.read_text().strip() if label_path.is_file() else ""
+    # parse YOLO-pose: class cx cy w h (kp_x kp_y kp_v)*4
+    keypoints = []
+    if text:
+        parts = text.splitlines()[0].split()
+        if len(parts) >= 5:
+            try:
+                cx, cy, w, h = (float(parts[1]), float(parts[2]),
+                                 float(parts[3]), float(parts[4]))
+                kps = []
+                i = 5
+                while i + 2 < len(parts):
+                    kps.append({"x": float(parts[i]), "y": float(parts[i + 1]),
+                                "v": int(float(parts[i + 2]))})
+                    i += 3
+                keypoints = kps
+            except ValueError:
+                pass
+    return {"filename": filename, "text": text, "keypoints": keypoints,
+            "path": str(label_path)}
+
+
+@app.put("/api/suite/datasets/{name}/label/{split}/{filename}", dependencies=[Depends(require_auth)])
+def save_dataset_label(name: str, split: str, filename: str, payload: dict) -> dict:
+    label_dir = REG.dataset_dir(name) / "labels" / split
+    label_dir.mkdir(parents=True, exist_ok=True)
+    label_path = label_dir / (Path(filename).stem + ".txt")
+    text = str(payload.get("text", "")).strip()
+    if not text and "keypoints" in payload:
+        kps = payload["keypoints"] or []
+        if kps:
+            # reconstruct a minimal label; class 0, full-image box
+            xs = [k["x"] for k in kps]; ys = [k["y"] for k in kps]
+            cx = (min(xs) + max(xs)) / 2; cy = (min(ys) + max(ys)) / 2
+            w = max(xs) - min(xs); h = max(ys) - min(ys)
+            w = max(w, 1e-3); h = max(h, 1e-3)
+            parts = ["0", f"{cx:.6f}", f"{cy:.6f}", f"{w:.6f}", f"{h:.6f}"]
+            for k in kps:
+                parts += [f"{k['x']:.6f}", f"{k['y']:.6f}", str(int(k.get('v', 2)))]
+            text = " ".join(parts)
+    label_path.write_text(text + ("\n" if text else ""))
+    return {"ok": True, "path": str(label_path), "text": text}
 @app.delete("/api/suite/datasets/{name}", dependencies=[Depends(require_auth)])
 def drop_dataset(name: str) -> dict:
     gone = REG.drop_dataset(name)
@@ -860,6 +932,9 @@ async def start_training(payload: dict) -> dict:
     epochs = int(payload.get("epochs", 40))
     imgsz = int(payload.get("imgsz", 448))
     batch = int(payload.get("batch", 8))
+    patience = int(payload.get("patience", 0) or 0)
+    early_stop_start = int(payload.get("early_stop_start", 0) or 0)
+    eval_every = int(payload.get("eval_every", 1) or 1)
     if not (1 <= epochs <= 2000):
         raise HTTPException(400, "epochs must be 1..2000")
     if not (160 <= imgsz <= 1280):
@@ -871,15 +946,17 @@ async def start_training(payload: dict) -> dict:
         "--data", str(yaml_path),
         "--model", str(payload.get("model", "yolo26n-pose.pt")),
         "--epochs", str(epochs), "--imgsz", str(imgsz), "--batch", str(batch),
-        "--device", str(payload.get("device", "cpu")),
-        "--workers", str(int(payload.get("workers", 2))),
-        "--project", str(REG.runs), "--name", name,
-        "--seed", str(int(payload.get("seed", 0))),
-    ]
-    project = _known_project(payload.get("project"))
-    job = JOBS.start("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv,
-                     meta={"run": name, "dataset": dataset, "epochs": epochs,
-                           "imgsz": imgsz, "project": project})
+        "--device", str(payload.get("device", "cpu")), 
+        "--workers", str(int(payload.get("workers", 2))), 
+        "--project", str(REG.runs), "--name", name, 
+        "--seed", str(int(payload.get("seed", 0))), 
+        "--patience", str(patience), "--early-stop-start", str(early_stop_start), 
+    ] 
+    project = _known_project(payload.get("project")) 
+    job = JOBS.start("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv, 
+                     meta={"run": name, "dataset": dataset, "epochs": epochs, 
+                           "imgsz": imgsz, "project": project, 
+                           "eval_every": eval_every})
     if DB is not None:
         DB.upsert_run(name, project=project, dataset=dataset, epochs=epochs,
                       imgsz=imgsz, batch=batch, device=str(payload.get("device", "cpu")),
@@ -893,6 +970,90 @@ def list_runs() -> dict:
     return {"runs": REG.list_runs(), "active": REG.active()}
 
 
+@app.post("/api/suite/runs/{name}/extend", dependencies=[Depends(require_auth)])
+async def extend_run(name: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    run_dir = REG.runs / name
+    weights = run_dir / "weights" / "best.pt"
+    if not weights.exists():
+        raise HTTPException(404, f"run {name} has no best.pt")
+    extra = int(payload.get("epochs", 10))
+    if not (1 <= extra <= 2000):
+        raise HTTPException(400, "epochs must be 1..2000")
+    # original epochs from model_card if present
+    card = run_dir / "weights" / "model_card.json"
+    orig_epochs = 40
+    try:
+        orig_epochs = int(json.loads(card.read_text()).get("train_args", {}).get("epochs", 40))
+    except Exception:
+        pass
+    new_epochs = orig_epochs + extra
+    new_name = f"{name}-ext{extra}"
+    out = REG.runs / new_name
+    if out.exists():
+        raise HTTPException(409, f"run {new_name} already exists")
+    # reuse dataset from card
+    dataset = ""
+    try:
+        dataset = str(json.loads(card.read_text()).get("train_args", {}).get("data", ""))
+    except Exception:
+        pass
+    # find dataset name by matching path
+    ds_name = None
+    for d in REG.list_datasets():
+        if d.get("yaml") == dataset or d.get("path") == dataset:
+            ds_name = d["name"]; break
+    if not ds_name:
+        # fallback: first dataset
+        ds_list = REG.list_datasets()
+        if ds_list:
+            ds_name = ds_list[0]["name"]
+    if not ds_name:
+        raise HTTPException(400, "no dataset found to extend")
+    yaml_path = _require_yaml(ds_name)
+    imgsz = int(payload.get("imgsz") or json.loads(card.read_text()).get("train_args", {}).get("imgsz", 448))
+    batch = int(payload.get("batch", 4))
+    device = str(payload.get("device", "cpu"))
+    argv = _python_argv() + [
+        "-m", "optical_modem.data.train_yolo",
+        "--data", str(yaml_path),
+        "--model", str(weights),
+        "--epochs", str(new_epochs), "--imgsz", str(imgsz), "--batch", str(batch),
+        "--device", device,
+        "--workers", str(int(payload.get("workers", 2))),
+        "--project", str(REG.runs), "--name", new_name,
+        "--seed", str(int(payload.get("seed", 0))),
+    ]
+    project = _known_project(payload.get("project"))
+    job = JOBS.start("train", f"Extend {name} (+{extra} epochs)", argv,
+                     meta={"run": new_name, "dataset": ds_name, "epochs": new_epochs,
+                           "imgsz": imgsz, "project": project})
+    if DB is not None:
+        DB.upsert_run(new_name, project=project, dataset=ds_name, epochs=new_epochs,
+                      imgsz=imgsz, batch=batch, device=device, base_model=str(weights),
+                      status="running", path=str(out))
+    return {"job": job.as_dict(), "run": new_name, "base": name}
+@app.get("/api/suite/runs/{name}/images", dependencies=[Depends(require_auth)])
+def run_images(name: str) -> dict:
+    d = REG.runs / name
+    if not d.is_dir():
+        raise HTTPException(404, "no such run")
+    imgs = sorted(p.name for p in d.iterdir()
+                  if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    return {"run": name, "images": imgs}
+
+
+@app.get("/api/suite/runs/{name}/image/{filename}", dependencies=[Depends(require_auth)])
+def run_image(name: str, filename: str) -> Response:
+    path = REG.runs / name / filename
+    if not path.is_file():
+        raise HTTPException(404, "no such image")
+    data = path.read_bytes()
+    media = "image/jpeg"
+    if path.suffix.lower() == ".png":
+        media = "image/png"
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": "no-cache"})
 @app.post("/api/suite/runs/{name}/evaluate", dependencies=[Depends(require_auth)])
 def evaluate_run(name: str, payload: dict | None = None) -> dict:
     payload = payload or {}
@@ -996,6 +1157,40 @@ def job(jid: str, lines: int = 120) -> dict:
     return snap
 
 
+@app.post("/api/jobs/{jid}/pause", dependencies=[Depends(require_auth)])
+def pause_job(jid: str) -> dict:
+    job_ = JOBS.get(jid)
+    if job_ is None:
+        raise HTTPException(404, "no such job")
+    proc = JOBS._procs.get(jid)
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGSTOP)
+        except OSError:
+            proc.send_signal(signal.SIGSTOP)
+    with JOBS._lock:
+        job_.message = "paused"
+        JOBS._save(job_)
+    JOBS._emit("job.paused", job_)
+    return job_.as_dict()
+
+
+@app.post("/api/jobs/{jid}/resume", dependencies=[Depends(require_auth)])
+def resume_job(jid: str) -> dict:
+    job_ = JOBS.get(jid)
+    if job_ is None:
+        raise HTTPException(404, "no such job")
+    proc = JOBS._procs.get(jid)
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGCONT)
+        except OSError:
+            proc.send_signal(signal.SIGCONT)
+    with JOBS._lock:
+        job_.message = ""
+        JOBS._save(job_)
+    JOBS._emit("job.resumed", job_)
+    return job_.as_dict()
 @app.post("/api/jobs/{jid}/cancel", dependencies=[Depends(require_auth)])
 def cancel_job(jid: str) -> dict:
     job_ = JOBS.cancel(jid)

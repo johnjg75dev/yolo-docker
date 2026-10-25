@@ -19,8 +19,22 @@ export function Train() {
   const [project, setProject] = useState("");
   const [runs, setRuns] = useState<any[]>([]);
   const [trainJobs, setTrainJobs] = useState<any[]>([]);
+  const [earlyStop, setEarlyStop] = useState(false);
+  const [earlyStopPatience, setEarlyStopPatience] = useState("5");
+  const [earlyStopStart, setEarlyStopStart] = useState("0");
+  const [evalEvery, setEvalEvery] = useState("1");
+  const [viewRun, setViewRun] = useState("");
+  const [runImgs, setRunImgs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const { show } = useToast();
+
+  useEffect(() => {
+    if (!viewRun) { setRunImgs([]); return; }
+    const load = () => api.runImages(viewRun).then((r) => setRunImgs(r.images || [])).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [viewRun]);
 
   useEffect(() => {
     const refresh = () => api.listJobs("train", 20).then(setTrainJobs).catch(() => {});
@@ -62,6 +76,9 @@ export function Train() {
         model: (customModel.trim() || model) || undefined,
         seed: seed ? Number(seed) : undefined,
         project: project || undefined,
+        patience: earlyStop ? Number(earlyStopPatience) : 0,
+        early_stop_start: earlyStop ? Number(earlyStopStart) : 0,
+        eval_every: evalEvery ? Number(evalEvery) : 1,
       });
       show("training started");
       api.listRuns().then(setRuns);
@@ -142,6 +159,30 @@ export function Train() {
               <input value={project} onChange={(e) => setProject(e.target.value)} />
             </label>
           </div>
+          <div className="row mt">
+            <label className="field grow">
+              <span>eval every (epochs)</span>
+              <input type="number" value={evalEvery} onChange={(e) => setEvalEvery(e.target.value)} min="1" />
+            </label>
+            <label className="field grow">
+              <span>
+                <input type="checkbox" checked={earlyStop} onChange={(e) => setEarlyStop(e.target.checked)} />
+                {" "}enable early stopping
+              </span>
+            </label>
+            {earlyStop && (
+              <>
+                <label className="field grow">
+                  <span>patience (epochs)</span>
+                  <input type="number" value={earlyStopPatience} onChange={(e) => setEarlyStopPatience(e.target.value)} min="1" />
+                </label>
+                <label className="field grow">
+                  <span>start at epoch</span>
+                  <input type="number" value={earlyStopStart} onChange={(e) => setEarlyStopStart(e.target.value)} min="0" />
+                </label>
+              </>
+            )}
+          </div>
           <div className="mt">
             <button type="submit" disabled={loading}>
               {loading ? "starting…" : "start training"}
@@ -182,7 +223,16 @@ export function Train() {
                   </td>
                   <td className="small">{Math.round(j.elapsed || 0)}s</td>
                   <td>
-                    {j.live ? <button onClick={async () => { await api.cancelJob(j.id); show("cancelled"); }}>cancel</button> : null}
+                    {j.live ? (
+                      <div className="row" style={{ gap: 4 }}>
+                        {j.message === "paused" ? (
+                          <button onClick={async () => { await api.resumeJob(j.id); show("resumed"); }}>resume</button>
+                        ) : (
+                          <button onClick={async () => { await api.pauseJob(j.id); show("paused"); }}>pause</button>
+                        )}
+                        <button onClick={async () => { await api.cancelJob(j.id); show("cancelled"); }}>cancel</button>
+                      </div>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -190,6 +240,27 @@ export function Train() {
           </table>
         )}
         <p className="small mt"><Link to="/jobs">View all jobs →</Link></p>
+      </div>
+
+      <div className="card">
+        <h2>Live training viewer</h2>
+        <p className="small">View prediction images Ultralytics saved during validation (val_batch*_pred.jpg). Same images each epoch — visually track progress.</p>
+        <label className="field">
+          <span>run</span>
+          <select value={viewRun} onChange={(e) => setViewRun(e.target.value)}>
+            <option value="">select a run…</option>
+            {runs.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
+          </select>
+        </label>
+        {viewRun && runImgs.length === 0 && <p className="small">No prediction images yet (Ultralytics saves them after the first validation pass).</p>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8, marginTop: 8 }}>
+          {runImgs.filter((f) => /pred/i.test(f)).map((f) => (
+            <div key={f} style={{ border: "1px solid #ddd", borderRadius: 4, overflow: "hidden" }}>
+              <img src={api.runImageUrl(viewRun, f)} alt={f} style={{ width: "100%", display: "block" }} />
+              <div className="small" style={{ padding: 4 }}>{f}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="card">
@@ -222,6 +293,25 @@ export function Train() {
                   <td>{r.mAP?.toFixed(3)}</td>
                   <td>
                     <Link to={`/train/${r.id}`}>view</Link>
+                    {r.has_weights !== false && (
+                      <button
+                        className="secondary"
+                        style={{ marginLeft: 6 }}
+                        onClick={async () => {
+                          const extra = prompt("Additional epochs:", "10");
+                          if (!extra) return;
+                          try {
+                            await api.extendRun(r.name, { epochs: Number(extra) });
+                            show("extension started");
+                            api.listRuns().then(setRuns);
+                          } catch (e: any) {
+                            show(e instanceof Error ? e.message : "extend failed", true);
+                          }
+                        }}
+                      >
+                        extend
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
