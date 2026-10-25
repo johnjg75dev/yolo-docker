@@ -96,8 +96,8 @@ export const api = {
     request<{ split: string; total: number; images: string[] }>(
       `/suite/datasets/${encodeURIComponent(name)}/images?split=${encodeURIComponent(split)}&limit=${limit}&offset=${offset}`
     ),
-  datasetImageUrl: (name: string, split: string, filename: string) =>
-    `${BASE}/suite/datasets/${encodeURIComponent(name)}/image/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`,
+  datasetImageUrl: (name: string, split: string, filename: string, size?: number) =>
+    `${BASE}/suite/datasets/${encodeURIComponent(name)}/image/${encodeURIComponent(split)}/${encodeURIComponent(filename)}${size ? `?size=${size}` : ""}`,
   datasetLabel: (name: string, split: string, filename: string) =>
     request<any>(`/suite/datasets/${encodeURIComponent(name)}/label/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`),
   saveDatasetLabel: (name: string, split: string, filename: string, payload: any) =>

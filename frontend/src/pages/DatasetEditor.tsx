@@ -13,6 +13,8 @@ export function DatasetEditor() {
   const [split, setSplit] = useState("train");
   const [images, setImages] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(20);
   const [active, setActive] = useState<string | null>(null);
   const [label, setLabel] = useState<any>(null);
   const [kps, setKps] = useState<{ x: number; y: number; v: number }[]>([]);
@@ -32,11 +34,18 @@ export function DatasetEditor() {
 
   useEffect(() => {
     if (!selected) return;
-    api.datasetImages(selected, split, 200, 0).then((r) => {
+    setPage(0);
+  }, [selected, split]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const limit = pageSize === 0 ? 100000 : pageSize;
+    const offset = pageSize === 0 ? 0 : page * pageSize;
+    api.datasetImages(selected, split, limit, offset).then((r) => {
       setImages(r.images || []);
       setTotal(r.total || 0);
     }).catch((e) => show(e.message, true));
-  }, [selected, split]);
+  }, [selected, split, page, pageSize]);
 
   useEffect(() => {
     if (!selected || !active) { setLabel(null); setKps([]); return; }
@@ -190,31 +199,51 @@ export function DatasetEditor() {
         {images.length === 0 ? (
           <p className="small">No images in this split.</p>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8 }}>
-            {images.map((img) => (
-              <div
-                key={img}
-                onClick={() => setActive(img)}
-                style={{
-                  cursor: "pointer",
-                  border: active === img ? "2px solid #4f8cff" : "1px solid #ddd",
-                  borderRadius: 4,
-                  overflow: "hidden",
-                  background: "#f5f5f5",
-                }}
-              >
-                <img
-                  src={selected ? api.datasetImageUrl(selected, split, img) : ""}
-                  alt={img}
-                  style={{ width: "100%", height: 100, objectFit: "cover", display: "block" }}
-                  loading="lazy"
-                />
-                <div className="small" style={{ padding: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {img}
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8 }}>
+              {images.map((img) => (
+                <div
+                  key={img}
+                  onClick={() => setActive(img)}
+                  style={{
+                    cursor: "pointer",
+                    border: active === img ? "2px solid #4f8cff" : "1px solid #ddd",
+                    borderRadius: 4,
+                    overflow: "hidden",
+                    background: "#f5f5f5",
+                  }}
+                >
+                  <img
+                    src={selected ? api.datasetImageUrl(selected, split, img, 128) : ""}
+                    alt={img}
+                    style={{ width: "100%", height: 100, objectFit: "cover", display: "block" }}
+                    loading="lazy"
+                  />
+                  <div className="small" style={{ padding: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {img}
+                  </div>
                 </div>
+              ))}
+            </div>
+            <div className="row mt" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="secondary" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>prev</button>
+                <span className="small">
+                  page {page + 1} of {Math.max(1, Math.ceil(total / (pageSize === 0 ? total || 1 : pageSize)))} ({total} images)
+                </span>
+                <button className="secondary" disabled={pageSize === 0 || (page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>next</button>
               </div>
-            ))}
-          </div>
+              <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                <span className="small">per page</span>
+                <select value={pageSize} onChange={(e) => { const v = Number(e.target.value); setPageSize(v); setPage(0); }}>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={0}>all</option>
+                </select>
+              </label>
+            </div>
+          </>
         )}
       </div>
 

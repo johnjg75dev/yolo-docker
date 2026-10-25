@@ -36,6 +36,7 @@ import json
 import os
 import time
 from pathlib import Path
+from PIL import Image
 from typing import Any
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Query, Request,
@@ -788,10 +789,33 @@ def dataset_images(name: str, split: str = "train", limit: int = 200, offset: in
 
 
 @app.get("/api/suite/datasets/{name}/image/{split}/{filename}", dependencies=[Depends(require_auth)])
-def dataset_image(name: str, split: str, filename: str) -> Response:
+def dataset_image(name: str, split: str, filename: str, size: int = Query(0, ge=0, le=1024)) -> Response:
     path = REG.dataset_dir(name) / "images" / split / filename
     if not path.is_file():
         raise HTTPException(404, "no such image")
+    # Thumbnail mode: resize + disk-cache for fast gallery loads.
+    if size and size > 0:
+        cache_dir = REG.dataset_dir(name) / ".thumbs" / split / str(size)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached = cache_dir / (Path(filename).stem + ".jpg")
+        if not cached.is_file():
+            try:
+                with Image.open(path) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((size, size), Image.LANCZOS)
+                    im.save(cached, "JPEG", quality=80, optimize=True)
+            except Exception:
+                # Fall back to serving the original on any decode failure.
+                data = path.read_bytes()
+                media = "image/jpeg"
+                if path.suffix.lower() == ".png":
+                    media = "image/png"
+                elif path.suffix.lower() == ".webp":
+                    media = "image/webp"
+                return Response(data, media_type=media, headers={"Cache-Control": "public, max-age=3600"})
+        data = cached.read_bytes()
+        return Response(data, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400, immutable"})
     data = path.read_bytes()
     media = "image/jpeg"
     if path.suffix.lower() == ".png":
