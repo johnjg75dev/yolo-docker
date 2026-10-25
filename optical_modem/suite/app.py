@@ -1280,6 +1280,14 @@ def cancel_job(jid: str) -> dict:
     return job_.as_dict()
 
 
+@app.delete("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
+def delete_job(jid: str) -> dict:
+    ok = JOBS.delete(jid)
+    if not ok:
+        raise HTTPException(404, "no such job")
+    return {"ok": True, "id": jid}
+
+
 # --------------------------------------------------------------------------- #
 # S2C
 # --------------------------------------------------------------------------- #

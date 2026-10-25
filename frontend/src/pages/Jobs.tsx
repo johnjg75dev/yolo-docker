@@ -26,6 +26,9 @@ export function Jobs() {
   const [kind, setKind] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [tails, setTails] = useState<Record<string, string>>({});
+  const [runs, setRuns] = useState<any[]>([]);
+  const [viewRun, setViewRun] = useState("");
+  const [runImgs, setRunImgs] = useState<string[]>([]);
   const { show } = useToast();
   const timer = useRef<any>(null);
 
@@ -44,6 +47,21 @@ export function Jobs() {
     return () => clearInterval(timer.current);
   }, [kind]);
 
+  useEffect(() => {
+    const refresh = () => api.listRuns().then(setRuns).catch(() => {});
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (!viewRun) { setRunImgs([]); return; }
+    const load = () => api.runImages(viewRun).then((r) => setRunImgs(r.images || [])).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [viewRun]);
+
   const cancel = async (jid: string) => {
     if (!confirm(`Cancel job ${jid}?`)) return;
     try {
@@ -53,6 +71,26 @@ export function Jobs() {
     } catch (e: any) {
       show(e instanceof Error ? e.message : "cancel failed", true);
     }
+  };
+
+  const del = async (jid: string) => {
+    if (!confirm(`Delete job ${jid}?`)) return;
+    try {
+      await api.deleteJob(jid);
+      show("deleted");
+      load();
+    } catch (e: any) {
+      show(e instanceof Error ? e.message : "delete failed", true);
+    }
+  };
+
+  const pause = async (jid: string) => {
+    try { await api.pauseJob(jid); show("paused"); load(); }
+    catch (e: any) { show(e instanceof Error ? e.message : "pause failed", true); }
+  };
+  const resume = async (jid: string) => {
+    try { await api.resumeJob(jid); show("resumed"); load(); }
+    catch (e: any) { show(e instanceof Error ? e.message : "resume failed", true); }
   };
 
   const toggle = async (jid: string) => {
@@ -116,9 +154,19 @@ export function Jobs() {
                     </td>
                     <td className="small">{Math.round(j.elapsed || 0)}s</td>
                     <td>
-                      {j.live ? (
-                        <button onClick={(e) => { e.stopPropagation(); cancel(j.id); }}>cancel</button>
-                      ) : null}
+                      <div className="row" style={{ gap: 4 }}>
+                        {j.live ? (
+                          <>
+                            {j.message === "paused" ? (
+                              <button onClick={(e) => { e.stopPropagation(); resume(j.id); }}>resume</button>
+                            ) : (
+                              <button onClick={(e) => { e.stopPropagation(); pause(j.id); }}>pause</button>
+                            )}
+                            <button onClick={(e) => { e.stopPropagation(); cancel(j.id); }}>cancel</button>
+                          </>
+                        ) : null}
+                        <button className="secondary" onClick={(e) => { e.stopPropagation(); del(j.id); }}>delete</button>
+                      </div>
                     </td>
                   </tr>
                   {expanded === j.id && (
@@ -132,6 +180,100 @@ export function Jobs() {
                     </tr>
                   )}
                 </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Live training viewer</h2>
+        <p className="small">View prediction images Ultralytics saved during validation (val_batch*_pred.jpg). Same images each epoch — visually track progress.</p>
+        <label className="field">
+          <span>run</span>
+          <select value={viewRun} onChange={(e) => setViewRun(e.target.value)}>
+            <option value="">select a run…</option>
+            {runs.map((r: any) => <option key={r.name} value={r.name}>{r.name}</option>)}
+          </select>
+        </label>
+        {viewRun && runImgs.length === 0 && <p className="small">No prediction images yet (Ultralytics saves them after the first validation pass).</p>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8, marginTop: 8 }}>
+          {runImgs.filter((f) => /pred/i.test(f)).map((f) => (
+            <div key={f} style={{ border: "1px solid #ddd", borderRadius: 4, overflow: "hidden" }}>
+              <img src={api.runImageUrl(viewRun, f)} alt={f} style={{ width: "100%", display: "block" }} />
+              <div className="small" style={{ padding: 4 }}>{f}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Runs</h2>
+        {runs.length === 0 ? (
+          <p className="small">No runs yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Dataset</th>
+                <th>Status</th>
+                <th>Epoch</th>
+                <th>mAP</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((r: any) => (
+                <tr key={r.name}>
+                  <td>
+                    <button style={{ background: "none", border: "none", color: "#4f8cff", cursor: "pointer", padding: 0, textDecoration: "underline" }} onClick={() => setViewRun(r.name)}>
+                      {r.name}
+                    </button>
+                  </td>
+                  <td>{r.dataset}</td>
+                  <td>
+                    <span className={`pill ${r.status === "done" ? "ok" : r.status === "running" ? "run" : "warn"}`}>
+                      {r.status}
+                    </span>
+                  </td>
+                  <td>{r.epoch}/{r.epochs}</td>
+                  <td>{r.mAP?.toFixed(3)}</td>
+                  <td>
+                    <button
+                      className="secondary"
+                      style={{ marginLeft: 6 }}
+                      onClick={async () => {
+                        try {
+                          await api.resumeRun(r.name, {});
+                          show("resumed");
+                          api.listRuns().then(setRuns);
+                        } catch (e: any) {
+                          show(e instanceof Error ? e.message : "resume failed", true);
+                        }
+                      }}
+                    >
+                      resume
+                    </button>
+                    <button
+                      className="secondary"
+                      style={{ marginLeft: 6 }}
+                      onClick={async () => {
+                        const extra = prompt("Additional epochs:", "10");
+                        if (!extra) return;
+                        try {
+                          await api.extendRun(r.name, { epochs: Number(extra) });
+                          show("extension started");
+                          api.listRuns().then(setRuns);
+                        } catch (e: any) {
+                          show(e instanceof Error ? e.message : "extend failed", true);
+                        }
+                      }}
+                    >
+                      extend
+                    </button>
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>

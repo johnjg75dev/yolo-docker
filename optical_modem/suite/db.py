@@ -635,6 +635,14 @@ class Store:
             row = s.get(JobRecord, jid)
             return row.as_dict() if row else None
 
+    def delete_job(self, jid: str) -> bool:
+        with self.session() as s:
+            row = s.get(JobRecord, jid)
+            if row is None:
+                return False
+            s.delete(row)
+            return True
+
     def list_jobs(self, kind: str | None = None, limit: int = 50,
                   project_id: int | None = None) -> list[dict]:
         with self.session() as s:

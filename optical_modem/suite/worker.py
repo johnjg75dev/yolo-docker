@@ -56,6 +56,7 @@ def main() -> None:
     print(f"[worker] started; data_dir={data_dir} max_concurrent={max_concurrent}", flush=True)
     while True:
         try:
+            jm.adopt_from_store()
             live = [j for j in jm.list() if j.status in LIVE]
             if len(live) < max_concurrent:
                 queued = [j for j in jm.list() if j.status == QUEUED]

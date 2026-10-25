@@ -154,6 +154,7 @@ export const api = {
   cancelJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/cancel`, { method: "POST" }),
   pauseJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/pause`, { method: "POST" }),
   resumeJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/resume`, { method: "POST" }),
+  deleteJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}`, { method: "DELETE" }),
   captureStart: (port?: number) =>
     request<CaptureStatus>("/capture/start", {
       method: "POST",

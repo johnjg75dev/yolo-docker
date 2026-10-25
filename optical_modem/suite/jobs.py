@@ -475,5 +475,34 @@ class JobManager:
             self._order.sort(key=lambda j: self._jobs[j].created, reverse=True)
         return {"adopted": added}
 
+    def delete(self, jid: str) -> bool:
+        with self._lock:
+            job = self._jobs.pop(jid, None)
+            if jid in self._order:
+                self._order.remove(jid)
+            proc = self._procs.pop(jid, None)
+            thread = self._threads.pop(jid, None)
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        d = self.dir(jid)
+        try:
+            import shutil
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+        if self.store is not None:
+            try:
+                self.store.delete_job(jid)
+            except Exception:
+                pass
+        return job is not None
+
     def log_file(self, jid: str) -> Path:
         return self.log_path(jid)
