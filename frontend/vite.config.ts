@@ -8,6 +8,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+
       includeAssets: ["favicon.svg", "icon-192.png", "icon-512.png"],
       manifest: {
         name: "Screen2Camera Optical Modem",
@@ -35,6 +36,9 @@ export default defineConfig({
         ],
       },
       workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         globPatterns: ["**/*.{js,css,html,svg,png,webmanifest,ico}"],
         navigateFallback: "/suite-assets/index.html",
         navigateFallbackDenylist: [/^\/api\//, /^\/capture/, /^\/suite-assets\/api\//],

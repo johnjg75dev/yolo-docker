@@ -107,6 +107,18 @@ app = FastAPI(title="Optical modem suite", docs_url=None, redoc_url=None,
 # X-Forwarded-Proto and keep redirects relative, so https cannot be downgraded
 # into a redirect loop (see optical_modem/net.py)
 net.install(app)
+
+
+@app.middleware("http")
+async def _no_cache_sw(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.endswith("sw.js") or path.endswith("registerSW.js"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 app.mount("/suite-assets", StaticFiles(directory=str(STATIC)), name="suite-assets")
 
 # --------------------------------------------------------------------------- #
