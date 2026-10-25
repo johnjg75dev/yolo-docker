@@ -107,7 +107,32 @@ def _s2c() -> S2C:
 app = FastAPI(title="Optical modem suite", docs_url=None, redoc_url=None,
               openapi_url=None)
 
-# CORS: allow the frontend (possibly on a different subdomain) to call this API
+API_HOST = os.environ.get("API_HOST", "").strip().lower()
+
+
+@app.middleware("http")
+async def _api_host_gate(request: Request, call_next):
+    """When API_HOST is set, only that host may serve /api/*, /healthz, /version.
+
+    Lets the frontend domain stop exposing the API surface while keeping the
+    container's own healthcheck (loopback/private peer) working.
+    """
+    if API_HOST:
+        path = request.url.path
+        if path.startswith("/api") or path in ("/healthz", "/version"):
+            host = request.headers.get("x-forwarded-host",
+                                     request.headers.get("host", "")).split(",")[0].strip().lower()
+            host = host.split(":")[0]
+            if host != API_HOST:
+                peer = request.client.host if request.client else ""
+                try:
+                    pa = ipaddress.ip_address(peer)
+                    internal = pa.is_loopback or pa.is_private or pa.is_reserved
+                except ValueError:
+                    internal = False
+                if not internal:
+                    return JSONResponse({"detail": "not found"}, status_code=404)
+    return await call_next(request)
 # with cookies.  Origins come from CORS_ORIGINS (comma-separated); when unset we
 # reflect any origin so a self-hosted deployment works without configuration.
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]

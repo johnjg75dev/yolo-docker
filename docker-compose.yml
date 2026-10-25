@@ -67,6 +67,9 @@ services:
       YOLO_OFFLINE: ${YOLO_OFFLINE:-1}
       YOLO_CONFIG_DIR: /data/.ultralytics
       FORWARDED_ALLOW_IPS: "*"
+      # Optional: when set, only this host serves /api/*, /healthz, /version.
+      # Use with the API subdomain so the frontend domain stops exposing the API.
+      API_HOST: ${API_HOST:-}
       # inprocess (default) runs jobs inside this container; set to `worker` to
       # delegate to the separate `worker` service (requires Redis + shared volume)
       SUITE_RUN_JOBS: ${SUITE_RUN_JOBS:-inprocess}
