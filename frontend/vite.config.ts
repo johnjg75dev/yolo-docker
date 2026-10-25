@@ -9,7 +9,7 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
 
-      includeAssets: ["favicon.svg", "icon-192.png", "icon-512.png"],
+      includeAssets: ["favicon.svg"],
       manifest: {
         name: "Screen2Camera Optical Modem",
         short_name: "S2C Modem",
@@ -23,13 +23,13 @@ export default defineConfig({
         icons: [
           {
             name: "icon-192",
-            src: "/suite-assets/icon-192.png",
+            src: "/static/icons/icon-192.png",
             sizes: "192x192",
             type: "image/png",
           },
           {
             name: "icon-512",
-            src: "/suite-assets/icon-512.png",
+            src: "/static/icons/icon-512.png",
             sizes: "512x512",
             type: "image/png",
           },
