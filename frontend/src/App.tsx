@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
 import { Nav } from "./components/Nav";
 import { Home } from "./pages/Home";
@@ -13,6 +13,7 @@ import { Settings } from "./pages/Settings";
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { authed, checking } = useAuth();
+  const location = useLocation();
 
   if (checking) {
     return (
@@ -25,7 +26,7 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!authed) {
-    return null;
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   return <>{children}</>;

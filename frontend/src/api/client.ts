@@ -13,7 +13,7 @@ const BASE = "/api";
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
-    credentials: "same-origin",
+    credentials: "include",
     headers: {
       ...(init?.headers || {}),
     },
@@ -26,7 +26,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<any>("/healthz"),
+  health: () => fetch("/healthz", { credentials: "include" }).then(async (r) => {
+    if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+    return r.json();
+  }),
 
   login: async (password: string): Promise<LoginResponse> => {
     return request<LoginResponse>("/login", {
