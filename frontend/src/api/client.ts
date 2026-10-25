@@ -91,7 +91,7 @@ export const api = {
 
   s2cDownload: (tid: string) => `/api/suite/s2c/${encodeURIComponent(tid)}/payload`,
 
-  listDatasets: () => request<any[]>("/suite/datasets"),
+  listDatasets: () => request<{ datasets: any[] }>("/suite/datasets").then((r) => r.datasets || []),
   deleteDataset: (name: string) =>
     request<{ ok: boolean }>(`/suite/datasets/${encodeURIComponent(name)}`, {
       method: "DELETE",
