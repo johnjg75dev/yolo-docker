@@ -71,6 +71,7 @@ BUS = get_bus()
 JOBS = JobManager(DATA_DIR, project_root=PROJECT_ROOT,
                   python=os.environ.get("SUITE_PYTHON") or None,
                   max_concurrent=int(os.environ.get("SUITE_MAX_JOBS", "1")),
+                  run_inprocess=os.environ.get("SUITE_RUN_JOBS", "inprocess").lower() in ("inprocess", "inline", "1", "true", "yes"),
                   env={**os.environ, "DATA_DIR": str(DATA_DIR),
                        "YOLO_OFFLINE": os.environ.get("YOLO_OFFLINE", "1"),
                        "PYTHONPATH": str(PROJECT_ROOT)},
@@ -936,7 +937,15 @@ def delete_model(name: str) -> dict:
 # --------------------------------------------------------------------------- #
 @app.get("/api/jobs", dependencies=[Depends(require_auth)])
 def jobs(kind: str | None = None, limit: int = 30) -> dict:
-    return {"jobs": [j.as_dict() for j in JOBS.list(kind=kind, limit=limit)]}
+    out = []
+    for j in JOBS.list(kind=kind, limit=limit):
+        if j.live:
+            snap = JOBS.snapshot(j.id, lines=20)
+            if snap is not None:
+                out.append(snap)
+                continue
+        out.append(j.as_dict())
+    return {"jobs": out}
 
 
 @app.get("/api/jobs/{jid}", dependencies=[Depends(require_auth)])

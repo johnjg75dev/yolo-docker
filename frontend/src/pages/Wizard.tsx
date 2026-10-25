@@ -38,7 +38,7 @@ export function Wizard() {
           {step < STEPS.length - 1 ? (
             <button onClick={() => setStep(step + 1)}>next</button>
           ) : (
-            <Link to="/decode">
+            <Link to="/s2c">
               <button>go to decode</button>
             </Link>
           )}
@@ -49,7 +49,7 @@ export function Wizard() {
         <h3>Quick links</h3>
         <div className="row">
           <Link to="/s2c"><button className="secondary">S2C</button></Link>
-          <Link to="/decode"><button className="secondary">Decode</button></Link>
+          <Link to="/s2c"><button className="secondary">Decode</button></Link>
           <Link to="/datasets"><button className="secondary">Datasets</button></Link>
         </div>
       </div>

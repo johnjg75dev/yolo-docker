@@ -10,6 +10,7 @@ import { Train } from "./pages/Train";
 import { Projects } from "./pages/Projects";
 import { Capture } from "./pages/Capture";
 import { Settings } from "./pages/Settings";
+import { Jobs } from "./pages/Jobs";
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { authed, checking } = useAuth();
@@ -92,6 +93,14 @@ export function App() {
           element={
             <AuthRoute>
               <Settings />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/jobs"
+          element={
+            <AuthRoute>
+              <Jobs />
             </AuthRoute>
           }
         />

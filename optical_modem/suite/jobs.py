@@ -99,9 +99,22 @@ def parse_progress(kind: str, text: str) -> tuple[float, str, dict]:
             m = re.match(r"^\s+(\d+)/(\d+)\s", last)
             if m:
                 done, total = int(m.group(1)), max(1, int(m.group(2)))
-                # the epoch line itself is emitted at the *end* of the epoch
-                progress = min(1.0, done / total)
-                message = f"epoch {done}/{total}"
+                # refine with the tqdm bar on the same line (batch progress within
+                # the current epoch).  Ultralytics prints "N/M [...]" twice on
+                # that line: the epoch counter first, then the batch counter after
+                # the colon.  Grab the *last* "a/b [" occurrence.
+                bars = re.findall(r"(\d+)/(\d+)\s*\[", last)
+                if len(bars) >= 2:
+                    bdone, btotal = int(bars[-1][0]), max(1, int(bars[-1][1]))
+                    if btotal > 0 and bdone < btotal:
+                        progress = min(1.0, ((done - 1) + bdone / btotal) / total)
+                        message = f"epoch {done}/{total} · {bdone}/{btotal}"
+                    else:
+                        progress = min(1.0, done / total)
+                        message = f"epoch {done}/{total}"
+                else:
+                    progress = min(1.0, done / total)
+                    message = f"epoch {done}/{total}"
         for m in _MAP.finditer(text):
             metrics = {"precision": float(m.group(3)), "recall": float(m.group(4)),
                        "map50": float(m.group(5)), "map50_95": float(m.group(6))}
@@ -171,7 +184,8 @@ class JobManager:
     def __init__(self, root: str | Path, python: str | None = None,
                  env: dict[str, str] | None = None, max_concurrent: int = 2,
                  project_root: str | Path | None = None,
-                 store=None, bus=None):
+                 store=None, bus=None, run_inprocess: bool = True):
+        self.run_inprocess = bool(run_inprocess)
         self.root = Path(root) / "jobs"
         self.root.mkdir(parents=True, exist_ok=True)
         self.python = python or sys.executable
@@ -252,7 +266,8 @@ class JobManager:
             self._order.insert(0, jid)
             self._save(job)
         self._emit("job.queued", job)
-        self._spawn(job, cwd)
+        if self.run_inprocess:
+            self._spawn(job, cwd)
         return job
 
     def _spawn(self, job: Job, cwd: str | Path | None = None) -> None:

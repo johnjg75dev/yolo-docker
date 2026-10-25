@@ -67,6 +67,9 @@ services:
       YOLO_OFFLINE: ${YOLO_OFFLINE:-1}
       YOLO_CONFIG_DIR: /data/.ultralytics
       FORWARDED_ALLOW_IPS: "*"
+      # inprocess (default) runs jobs inside this container; set to `worker` to
+      # delegate to the separate `worker` service (requires Redis + shared volume)
+      SUITE_RUN_JOBS: ${SUITE_RUN_JOBS:-inprocess}
       # How many background jobs may run at once. 1 is right for a 4-core box:
       # training already uses every core, and a second job would only thrash.
       SUITE_MAX_JOBS: ${SUITE_MAX_JOBS:-1}
@@ -96,6 +99,42 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: optical-modem-suite:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
+      APP_SECRET: ${APP_SECRET:-}
+      DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-suite}:${POSTGRES_PASSWORD:-suite}@db:5432/${POSTGRES_DB:-suite}
+      REDIS_URL: redis://redis:6379/0
+      SUITE_RUN_JOBS: worker
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
+      MKL_NUM_THREADS: ${MKL_NUM_THREADS:-4}
+      YOLO_OFFLINE: ${YOLO_OFFLINE:-1}
+      YOLO_CONFIG_DIR: /data/.ultralytics
+      SUITE_MAX_JOBS: ${SUITE_MAX_JOBS:-1}
+      SUITE_PYTHON: ${SUITE_PYTHON:-}
+      PYTHONPATH: /app
+    volumes:
+      - suite-data:/data
+    command: ["python", "-m", "optical_modem.suite.worker"]
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 5g
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
   db:
     image: postgres:16-alpine
     restart: unless-stopped

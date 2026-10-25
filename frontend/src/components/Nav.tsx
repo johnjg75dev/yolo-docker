@@ -18,6 +18,7 @@ export function Nav() {
       {link("/s2c", "S2C")}
       {link("/datasets", "Datasets")}
       {link("/train", "Train")}
+      {link("/jobs", "Jobs")}
       {link("/projects", "Projects")}
       {link("/capture", "Capture")}
       {link("/settings", "Settings")}

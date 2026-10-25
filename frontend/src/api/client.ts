@@ -116,6 +116,14 @@ export const api = {
     }),
 
   captureStatus: () => request<CaptureStatus>("/capture/status"),
+  listJobs: (kind?: string, limit = 50) => {
+    const params = new URLSearchParams();
+    if (kind) params.set("kind", kind);
+    params.set("limit", String(limit));
+    return request<{ jobs: any[] }>(`/jobs?${params.toString()}`).then((r) => r.jobs || []);
+  },
+  getJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}`),
+  cancelJob: (jid: string) => request<any>(`/jobs/${encodeURIComponent(jid)}/cancel`, { method: "POST" }),
   captureStart: (port?: number) =>
     request<CaptureStatus>("/capture/start", {
       method: "POST",

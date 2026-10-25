@@ -18,8 +18,16 @@ export function Train() {
   const [seed, setSeed] = useState("");
   const [project, setProject] = useState("");
   const [runs, setRuns] = useState<any[]>([]);
+  const [trainJobs, setTrainJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const { show } = useToast();
+
+  useEffect(() => {
+    const refresh = () => api.listJobs("train", 20).then(setTrainJobs).catch(() => {});
+    refresh();
+    const t = setInterval(refresh, 2000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     api.trainDefaults().then((d) => {
@@ -140,6 +148,48 @@ export function Train() {
             </button>
           </div>
         </form>
+      </div>
+
+      <div className="card">
+        <h2>Active training jobs</h2>
+        {trainJobs.length === 0 ? (
+          <p className="small">No training jobs.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Elapsed</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {trainJobs.map((j: any) => (
+                <tr key={j.id}>
+                  <td className="small">{j.id}</td>
+                  <td>{j.title}</td>
+                  <td>
+                    <span className={`pill ${j.status === "ok" ? "ok" : j.live ? "run" : "warn"}`}>{j.status}</span>
+                  </td>
+                  <td style={{ minWidth: 160 }}>
+                    <div style={{ background: "#eee", borderRadius: 4, height: 8, overflow: "hidden" }}>
+                      <div style={{ width: `${Math.round((j.progress || 0) * 100)}%`, height: "100%", background: "#4f8cff" }} />
+                    </div>
+                    <div className="small">{j.message || ""} {j.metrics && Object.keys(j.metrics).length ? `· ${Object.entries(j.metrics).map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(3) : v}`).join(" ")}` : ""}</div>
+                  </td>
+                  <td className="small">{Math.round(j.elapsed || 0)}s</td>
+                  <td>
+                    {j.live ? <button onClick={async () => { await api.cancelJob(j.id); show("cancelled"); }}>cancel</button> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="small mt"><Link to="/jobs">View all jobs →</Link></p>
       </div>
 
       <div className="card">
