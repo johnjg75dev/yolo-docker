@@ -293,7 +293,21 @@ export function Train() {
                   <td>{r.mAP?.toFixed(3)}</td>
                   <td>
                     <Link to={`/train/${r.id}`}>view</Link>
-                    {r.has_weights !== false && (
+                    <button
+                      className="secondary"
+                      style={{ marginLeft: 6 }}
+                      onClick={async () => {
+                        try {
+                          await api.resumeRun(r.name, {});
+                          show("resumed");
+                          api.listRuns().then(setRuns);
+                        } catch (e: any) {
+                          show(e instanceof Error ? e.message : "resume failed", true);
+                        }
+                      }}
+                    >
+                      resume
+                    </button>
                       <button
                         className="secondary"
                         style={{ marginLeft: 6 }}
@@ -311,7 +325,6 @@ export function Train() {
                       >
                         extend
                       </button>
-                    )}
                   </td>
                 </tr>
               ))}

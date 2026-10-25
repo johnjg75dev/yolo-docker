@@ -39,6 +39,12 @@ def train(args) -> Path:
         else:
             trainer.args.patience = patience
 
+    if getattr(args, "resume", False):
+        model = YOLO(str(Path(args.project) / args.name / "weights" / "last.pt"))
+        res = model.train(resume=True)
+        best = Path(args.project) / args.name / "weights" / "best.pt"
+        print(f"resumed; best weights: {best}")
+        return best
     model = YOLO(args.model)
     model.add_callback("on_train_epoch_end", _delay_early_stop)
     res = model.train(
@@ -124,6 +130,8 @@ def main(argv=None):
                     help="early-stopping patience (epochs); 0 = auto")
     ap.add_argument("--early-stop-start", type=int, default=0, dest="early_stop_start",
                     help="do not apply early stopping before this epoch")
+    ap.add_argument("--resume", action="store_true", default=False,
+                    help="resume training from last.pt")
     args = ap.parse_args(argv)
     os.environ.setdefault("YOLO_OFFLINE", "1")
     best = train(args)

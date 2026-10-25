@@ -1033,6 +1033,63 @@ async def extend_run(name: str, payload: dict | None = None) -> dict:
                       imgsz=imgsz, batch=batch, device=device, base_model=str(weights),
                       status="running", path=str(out))
     return {"job": job.as_dict(), "run": new_name, "base": name}
+@app.post("/api/suite/runs/{name}/resume", dependencies=[Depends(require_auth)])
+async def resume_run(name: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    run_dir = REG.runs / name
+    weights = run_dir / "weights" / "last.pt"
+    if not weights.exists():
+        raise HTTPException(404, f"run {name} has no last.pt to resume from")
+    card = run_dir / "weights" / "model_card.json"
+    orig_epochs = 40
+    try:
+        orig_epochs = int(json.loads(card.read_text()).get("train_args", {}).get("epochs", 40))
+    except Exception:
+        pass
+    epochs = int(payload.get("epochs", orig_epochs))
+    imgsz = int(payload.get("imgsz") or 448)
+    try:
+        imgsz = int(payload.get("imgsz") or json.loads(card.read_text()).get("train_args", {}).get("imgsz", 448))
+    except Exception:
+        pass
+    batch = int(payload.get("batch", 4))
+    device = str(payload.get("device", "cpu"))
+    # find dataset
+    dataset = ""
+    try:
+        dataset = str(json.loads(card.read_text()).get("train_args", {}).get("data", ""))
+    except Exception:
+        pass
+    ds_name = None
+    for d in REG.list_datasets():
+        if d.get("yaml") == dataset or d.get("path") == dataset:
+            ds_name = d["name"]; break
+    if not ds_name:
+        ds_list = REG.list_datasets()
+        if ds_list:
+            ds_name = ds_list[0]["name"]
+    if not ds_name:
+        raise HTTPException(400, "no dataset found to resume")
+    yaml_path = _require_yaml(ds_name)
+    argv = _python_argv() + [
+        "-m", "optical_modem.data.train_yolo",
+        "--data", str(yaml_path),
+        "--model", str(weights),
+        "--epochs", str(epochs), "--imgsz", str(imgsz), "--batch", str(batch),
+        "--device", device,
+        "--workers", str(int(payload.get("workers", 2))),
+        "--project", str(REG.runs), "--name", name,
+        "--resume",
+    ]
+    project = _known_project(payload.get("project"))
+    job = JOBS.start("train", f"Resume {name}", argv,
+                     meta={"run": name, "dataset": ds_name, "epochs": epochs,
+                           "imgsz": imgsz, "project": project})
+    if DB is not None:
+        DB.upsert_run(name, project=project, dataset=ds_name, epochs=epochs,
+                      imgsz=imgsz, batch=batch, device=device, base_model=str(weights),
+                      status="running", path=str(run_dir))
+    return {"job": job.as_dict(), "run": name}
 @app.get("/api/suite/runs/{name}/images", dependencies=[Depends(require_auth)])
 def run_images(name: str) -> dict:
     d = REG.runs / name

@@ -112,6 +112,12 @@ export const api = {
     }),
 
   listRuns: () => request<{ runs: any[]; active: any }>("/suite/runs").then((r) => r.runs),
+  resumeRun: (name: string, payload?: any) =>
+    request<any>(`/suite/runs/${encodeURIComponent(name)}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    }),
   extendRun: (name: string, payload: any) =>
     request<any>(`/suite/runs/${encodeURIComponent(name)}/extend`, {
       method: "POST",
