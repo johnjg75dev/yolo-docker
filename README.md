@@ -348,8 +348,14 @@ the browser allows credentialed cross-origin calls. Cookies stay `SameSite=Lax`,
 which is sufficient for subdomains of the same registrable domain.
 
 The suite container itself does not need to know its public prefix: Caddy strips
-`/yolo/v1` and the app keeps serving `/api/*`, `/healthz`, `/version` (the
-last two are restricted to internal peers).
+`/yolo/v1` and the app keeps serving `/api/*`, `/healthz`, `/version`.
+
+To make the frontend domain stop exposing the API surface entirely, set
+`API_HOST=api.alphabitlabs.com` on the `suite` service. The app then returns 404
+for `/api/*`, `/healthz` and `/version` on any other host (container healthchecks
+on loopback/private peers still pass). Requires the frontend to be rebuilt with
+`VITE_API_BASE=https://api.alphabitlabs.com/yolo/v1/api` (otherwise it will
+call `/api/*` on the frontend domain and get 404).
 
 ---
 
