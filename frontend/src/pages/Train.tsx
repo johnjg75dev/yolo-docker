@@ -281,8 +281,12 @@ export function Train() {
             </thead>
             <tbody>
               {runs.map((r: any) => (
-                <tr key={r.id}>
-                  <td>{r.name}</td>
+                <tr key={r.name}>
+                  <td>
+                    <button style={{ background: "none", border: "none", color: "#4f8cff", cursor: "pointer", padding: 0, textDecoration: "underline" }} onClick={() => setViewRun(r.name)}>
+                      {r.name}
+                    </button>
+                  </td>
                   <td>{r.dataset}</td>
                   <td>
                     <span className={`pill ${r.status === "done" ? "ok" : r.status === "running" ? "run" : "warn"}`}>
@@ -292,7 +296,6 @@ export function Train() {
                   <td>{r.epoch}/{r.epochs}</td>
                   <td>{r.mAP?.toFixed(3)}</td>
                   <td>
-                    <Link to={`/train/${r.id}`}>view</Link>
                     <button
                       className="secondary"
                       style={{ marginLeft: 6 }}
@@ -308,23 +311,23 @@ export function Train() {
                     >
                       resume
                     </button>
-                      <button
-                        className="secondary"
-                        style={{ marginLeft: 6 }}
-                        onClick={async () => {
-                          const extra = prompt("Additional epochs:", "10");
-                          if (!extra) return;
-                          try {
-                            await api.extendRun(r.name, { epochs: Number(extra) });
-                            show("extension started");
-                            api.listRuns().then(setRuns);
-                          } catch (e: any) {
-                            show(e instanceof Error ? e.message : "extend failed", true);
-                          }
-                        }}
-                      >
-                        extend
-                      </button>
+                    <button
+                      className="secondary"
+                      style={{ marginLeft: 6 }}
+                      onClick={async () => {
+                        const extra = prompt("Additional epochs:", "10");
+                        if (!extra) return;
+                        try {
+                          await api.extendRun(r.name, { epochs: Number(extra) });
+                          show("extension started");
+                          api.listRuns().then(setRuns);
+                        } catch (e: any) {
+                          show(e instanceof Error ? e.message : "extend failed", true);
+                        }
+                      }}
+                    >
+                      extend
+                    </button>
                   </td>
                 </tr>
               ))}
