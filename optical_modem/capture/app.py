@@ -38,7 +38,7 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import (Depends, FastAPI, Form, HTTPException, Request, Response,
+from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request, Response,
                      UploadFile, WebSocket, WebSocketDisconnect)
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                StreamingResponse)
