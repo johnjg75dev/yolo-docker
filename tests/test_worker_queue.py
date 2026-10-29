@@ -217,3 +217,44 @@ def test_queue_without_store_is_a_noop():
     assert q.release("anything") is True
     assert q.reap()["requeued"] == []
     assert q.stats() == {}
+
+
+def test_worker_mode_is_no_longer_refused(tmp_path):
+    """SUITE_RUN_JOBS=worker used to raise RuntimeError at import.
+
+    That guard was correct when it was written: with no claim protocol, two
+    processes polling one queue would each run the job. Instead of deleting the
+    guard and hoping, this asserts the replacement property -- the web process
+    boots and takes the *enqueue-only* path.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ,
+           "DATA_DIR": str(tmp_path),
+           "DATABASE_URL": f"sqlite:///{tmp_path/'s.db'}",
+           "APP_PASSWORD": "demo", "APP_SECRET": "s", "COOKIE_SECURE": "0",
+           "SUITE_RUN_JOBS": "worker",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    # the test runner exports SUITE_DB=0 to keep other tests off a real DB;
+    # here we need the store, since the queue *is* the database
+    env.pop("SUITE_DB", None)
+    code = (
+        "from optical_modem.suite.app import app, JOB_MODE_EXTERNAL, JOBS;"
+        "assert JOB_MODE_EXTERNAL, 'expected worker mode';"
+        "assert JOBS.enqueue_only and not JOBS.run_inprocess is False;"
+        "j = JOBS.start('synth', 'probe', ['true']);"
+        "print('MODE', 'worker' if JOB_MODE_EXTERNAL else 'inprocess');"
+        "print('PROCS', len(JOBS._procs));"
+        "print('STATUS', j.status);"
+        "print('QUEUED', JOBS.queue.stats().get('queued'))"
+    )
+    r = subprocess.run([sys.executable, "-c", code], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, f"app refused to boot in worker mode: {r.stderr[-1500:]}"
+    out = r.stdout
+    assert "MODE worker" in out, out
+    assert "PROCS 0" in out, "web process must not spawn in worker mode"
+    assert "STATUS queued" in out, "job must wait for a worker"
+    assert "QUEUED 1" in out, out

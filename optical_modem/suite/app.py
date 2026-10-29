@@ -87,12 +87,16 @@ DB = get_store()
 BUS = get_bus()
 log.info("suite boot data_dir=%s db=%s bus=%s run_jobs=%s max_jobs=%s", DATA_DIR, "on" if DB is not None else "off", type(BUS).__name__, os.environ.get("SUITE_RUN_JOBS", "inprocess"), os.environ.get("SUITE_MAX_JOBS", "1"))
 _job_mode = os.environ.get("SUITE_RUN_JOBS", "inprocess").lower()
-if _job_mode not in ("inprocess", "inline", "1", "true", "yes"):
-    raise RuntimeError("SUITE_RUN_JOBS must be inprocess; external worker mode is not supported safely")
+#: True when long jobs run in separate worker containers (audit S5): the web
+#: process only enqueues and reports, and worker.py does the running. This used
+#: to raise RuntimeError, because claiming did not exist -- two workers polling
+#: one queue would both run the same job.
+JOB_MODE_EXTERNAL = _job_mode not in ("inprocess", "inline", "1", "true", "yes")
 JOBS = JobManager(DATA_DIR, project_root=PROJECT_ROOT,
                   python=os.environ.get("SUITE_PYTHON") or None,
                   max_concurrent=int(os.environ.get("SUITE_MAX_JOBS", "1")),
                   run_inprocess=True,
+                  enqueue_only=JOB_MODE_EXTERNAL,
                   env={**os.environ, "DATA_DIR": str(DATA_DIR),
                        "YOLO_OFFLINE": os.environ.get("YOLO_OFFLINE", "1"),
                        "PYTHONPATH": str(PROJECT_ROOT)},
@@ -396,6 +400,40 @@ def spa_root() -> HTMLResponse:
 # --------------------------------------------------------------------------- #
 # status
 # --------------------------------------------------------------------------- #
+def _queue_stats() -> dict:
+    """Queue depth, never raising: /healthz must not fail on a transient DB."""
+    try:
+        return JOBS.queue.stats()
+    except Exception:
+        return {}
+
+
+@app.get("/api/suite/workers", dependencies=[Depends(require_auth)])
+def workers() -> dict:
+    """Who is running what.
+
+    ``by_owner`` comes from live job claims, so it lists workers that currently
+    have work. Idle workers only appear when Redis is configured, because they
+    advertise through a TTL'd key -- with the local bus an idle worker is simply
+    invisible here. Worth knowing before concluding a worker is down.
+    """
+    stats = _queue_stats()
+    try:
+        advertised = BUS.workers()
+    except Exception:
+        advertised = []
+    seen = dict(stats.get("by_owner") or {})
+    for name in advertised:
+        seen.setdefault(name, 0)
+    return {"mode": "worker" if JOB_MODE_EXTERNAL else "inprocess",
+            "self": JOBS.worker_id,
+            "max_concurrent": JOBS.max_concurrent,
+            "max_queued": JOBS.max_queued,
+            "queue": stats,
+            "workers": [{"id": name, "running": count}
+                        for name, count in sorted(seen.items())]}
+
+
 @app.get("/api/suite/status", dependencies=[Depends(require_auth)])
 def status() -> dict:
     return _stage_state()
@@ -2173,6 +2211,9 @@ def healthz(request: Request, response: Response) -> dict:
             "models": len(REG.list_models()),
             "active_model": (REG.active() or {}).get("name"),
             "jobs_running": sum(1 for j in JOBS.list(limit=50) if j.live),
+            "job_mode": "worker" if JOB_MODE_EXTERNAL else "inprocess",
+            "worker": JOBS.worker_id,
+            "queue": _queue_stats(),
             "password_set": bool(capture_app.APP_PASSWORD),
             "database": {**db_info, "ok": db_ok},
             "bus": BUS.info()}

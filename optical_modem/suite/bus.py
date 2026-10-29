@@ -107,6 +107,16 @@ class LocalBus:
         with self._lock:
             return self._locks.get(name, 0.0) > time.time()
 
+    # ---- fleet -----------------------------------------------------------
+    def workers(self) -> list[str]:
+        """Worker ids that have advertised themselves.
+
+        The in-process bus has nowhere shared to keep these, so it reports
+        nothing at all -- the fleet view then falls back to live job ownership
+        (``by_owner``), which misses idle workers. RedisBus overrides this.
+        """
+        return []
+
     # ---- heartbeats ------------------------------------------------------
     def heartbeat(self, key: str, ttl: float = 30.0) -> None:
         """Mark a job as alive (expires, so a crashed worker stops looking live)."""
@@ -221,6 +231,19 @@ class RedisBus(LocalBus):
             return bool(self._client.exists(LOCK_PREFIX + name))
         except Exception:
             return super().held(name)
+
+    def workers(self) -> list[str]:
+        """Worker ids that advertised themselves and have not expired.
+
+        Keys are written with a TTL by :meth:`heartbeat`, so a worker that is
+        killed simply disappears -- no reaper needed for the fleet view.
+        """
+        try:
+            names = [key.split(":", 1)[1] for key in
+                     self._client.scan_iter(match=f"{HEARTBEAT_PREFIX}worker:*", count=200)]
+        except Exception:
+            return []
+        return [n[len("worker:"):] for n in names if n.startswith("worker:")]
 
     def heartbeat(self, key: str, ttl: float = 30.0) -> None:
         """Mark a job as alive; a stale key means the process died."""
