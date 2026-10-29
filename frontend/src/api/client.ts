@@ -44,23 +44,14 @@ export function setAuthToken(tok?: string | null) {
   }
 }
 
-function appendTokenQuery(url: string): string {
-  const tok = getAuthToken();
-  if (!tok) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}_tok=${encodeURIComponent(tok)}`;
-}
-
-function resolveApiUrl(path: string, withQueryToken = false): string {
-  let out: string;
+function resolveApiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) {
-    out = path;
-  } else if (path.startsWith("/api/") || path === "/api") {
-    out = BASE === "/api" ? path : `${BASE}${path.slice(4)}`;
-  } else {
-    out = `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
+    return path;
   }
-  return withQueryToken && new URL(out, window.location.href).origin !== window.location.origin ? appendTokenQuery(out) : out;
+  if (path.startsWith("/api/") || path === "/api") {
+    return BASE === "/api" ? path : `${BASE}${path.slice(4)}`;
+  }
+  return `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function parseError(res: Response): Promise<string> {
@@ -76,13 +67,18 @@ async function parseError(res: Response): Promise<string> {
   return text;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Auth as a header, never a query parameter: URLs leak into logs and history. */
+function authHeaders(): Record<string, string> {
   const tok = getAuthToken();
+  return tok ? { "X-OM-Token": tok } : {};
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(resolveApiUrl(path), {
     ...init,
     credentials: "include",
     headers: {
-      ...(tok ? { "X-OM-Token": tok } : {}),
+      ...authHeaders(),
       ...(init?.headers || {}),
     },
   });
@@ -93,7 +89,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  eventStreamUrl: () => resolveApiUrl("/events", true),
+  eventStreamUrl: () => resolveApiUrl("/events"),
+  authHeaders,
   // ---------------- Auth & Diagnostics ----------------
   health: () =>
     fetch("/healthz", { credentials: "include" }).then(async (r) => {
@@ -141,9 +138,9 @@ export const api = {
     request<{ events: any[]; bus: any }>(
       `/suite/events?limit=${limit}${kind ? `&kind=${encodeURIComponent(kind)}` : ""}`
     ),
-  exportManifestUrl: () => resolveApiUrl("/suite/export/manifest", true),
+  exportManifestUrl: () => resolveApiUrl("/suite/export/manifest"),
   qrSvgUrl: (data: string, scale = 6) =>
-    resolveApiUrl(`/qr.svg?data=${encodeURIComponent(data)}&scale=${scale}`, true),
+    resolveApiUrl(`/qr.svg?data=${encodeURIComponent(data)}&scale=${scale}`),
 
   post: (path: string, body?: any) =>
     request<any>(path, {
@@ -263,12 +260,11 @@ export const api = {
     resolveApiUrl(
       `/suite/datasets/${encodeURIComponent(name)}/preview?split=${encodeURIComponent(
         split
-      )}&index=${index}${bust ? `&t=${bust}` : ""}`,
-      true
+      )}&index=${index}${bust ? `&t=${bust}` : ""}`
     ),
 
   datasetExportZipUrl: (name: string) =>
-    resolveApiUrl(`/suite/datasets/${encodeURIComponent(name)}/export.zip`, true),
+    resolveApiUrl(`/suite/datasets/${encodeURIComponent(name)}/export.zip`),
 
   datasetImages: (name: string, split = "train", limit = 200, offset = 0) =>
     request<{ split: string; total: number; images: string[] }>(
@@ -281,8 +277,7 @@ export const api = {
     resolveApiUrl(
       `/suite/datasets/${encodeURIComponent(name)}/image/${encodeURIComponent(
         split
-      )}/${encodeURIComponent(filename)}${size ? `?size=${size}` : ""}`,
-      true
+      )}/${encodeURIComponent(filename)}${size ? `?size=${size}` : ""}`
     ),
 
   assignDataset: (name: string, project: string, allowMove = false) =>
@@ -410,8 +405,7 @@ export const api = {
 
   runImageUrl: (name: string, filename: string) =>
     resolveApiUrl(
-      `/suite/runs/${encodeURIComponent(name)}/image/${encodeURIComponent(filename)}`,
-      true
+      `/suite/runs/${encodeURIComponent(name)}/image/${encodeURIComponent(filename)}`
     ),
 
   evaluateRun: (
@@ -509,7 +503,7 @@ export const api = {
     ),
 
   finderSvgUrl: (shape: string, size = 64) =>
-    resolveApiUrl(`/suite/finder/${encodeURIComponent(shape)}.svg?size=${size}`, true),
+    resolveApiUrl(`/suite/finder/${encodeURIComponent(shape)}.svg?size=${size}`),
 
   s2cTransmit: (payload: {
     text?: string;
@@ -545,13 +539,13 @@ export const api = {
     ),
 
   s2cFrameUrl: (tid: string, index = 0) =>
-    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/frame.png?index=${index}`, true),
+    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/frame.png?index=${index}`),
 
   s2cPreviewUrl: (tid: string, index = 0) =>
-    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/preview.jpg?index=${index}`, true),
+    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/preview.jpg?index=${index}`),
 
   s2cPayloadUrl: (tid: string) =>
-    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/payload`, true),
+    resolveApiUrl(`/suite/s2c/${encodeURIComponent(tid)}/payload`),
 
   s2cReceive: (tid: string, file: File | Blob, filename = "capture.jpg") => {
     const form = new FormData();

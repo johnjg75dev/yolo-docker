@@ -704,7 +704,7 @@ export function Datasets() {
 
               <div className="optical-frame-stage" style={{ minHeight: 380 }}>
                 <img
-                  src={api.datasetPreviewUrl(
+                  crossOrigin="use-credentials" src={api.datasetPreviewUrl(
                     previewDs.name,
                     previewSplit,
                     previewIdx

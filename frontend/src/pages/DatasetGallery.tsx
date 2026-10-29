@@ -48,7 +48,7 @@ export function DatasetGallery({ dataset, projects, initialProject, onClose, onC
     </div>
     {loading ? <p className="small mt">Loading thumbnails…</p> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, marginTop: 12 }}>
       {images.map(img => <label key={img} className="card-subtle" style={{ padding: 6, cursor: "pointer", border: selected[split].includes(img) ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
-        <img loading="lazy" src={api.datasetImageUrl(dataset.name, split, img, 180)} alt="" style={{ width: "100%", height: 100, objectFit: "contain" }} />
+        <img loading="lazy" crossOrigin="use-credentials" src={api.datasetImageUrl(dataset.name, split, img, 180)} alt="" style={{ width: "100%", height: 100, objectFit: "contain" }} />
         <span className="small" style={{ display: "flex", gap: 5, overflowWrap: "anywhere" }}><input type="checkbox" checked={selected[split].includes(img)} onChange={e => update(old => e.target.checked ? [...old, img] : old.filter(x => x !== img))} />{img}</span>
       </label>)}
     </div>}

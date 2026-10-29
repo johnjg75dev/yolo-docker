@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shlex
 import signal
 import subprocess
@@ -355,10 +356,18 @@ class JobManager:
                 raise JobCapacityError(
                     f"{len(live)} jobs already queued (limit {self.max_queued}); "
                     "wait for the workers to catch up")
-            jid = time.strftime("%Y%m%d-%H%M%S") + "-" + kind
+            # The random suffix is not decoration. Two JobManagers built in the
+            # same second -- two tests, or a web process restarting -- previously
+            # produced the *same* id, so the second job overwrote the first one's
+            # row and both ran under one name. Harmless while ownership was
+            # implicit, but a claim is keyed by id, so a collision now means one
+            # process can hold a claim that another believes is its own. Same
+            # convention s2c.py already uses for transfer ids.
+            jid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{secrets.token_hex(2)}"
             n = 2
             while jid in self._jobs:
-                jid = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{n}"
+                jid = (f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-"
+                       f"{secrets.token_hex(2)}-{n}")
                 n += 1
             job = Job(id=jid, kind=kind, title=title, argv=[str(a) for a in argv],
                       meta=meta or {}, status=QUEUED)

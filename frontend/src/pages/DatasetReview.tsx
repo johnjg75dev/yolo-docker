@@ -29,7 +29,7 @@ export function DatasetReview({ name, onClose }: { name: string; onClose: () => 
       <p role={report.issue_count ? "alert" : "status"}><strong>{report.issue_count ? `${report.issue_count} findings need review` : "No structural issues found"}</strong> · {report.counts.train || 0} train / {report.counts.val || 0} val images checked</p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 10 }}>
         {report.issues.map((issue, i) => <div key={`${issue.file}-${issue.kind}-${i}`} className="card-subtle" style={{ border: "2px solid #e59e0b", padding: 8 }}>
-          {issue.split && issue.image && <img loading="lazy" src={api.datasetImageUrl(name, issue.split, issue.image, 180)} alt={`Review ${issue.file}`} style={{ width: "100%", height: 110, objectFit: "contain" }} />}
+          {issue.split && issue.image && <img loading="lazy" crossOrigin="use-credentials" src={api.datasetImageUrl(name, issue.split, issue.image, 180)} alt={`Review ${issue.file}`} style={{ width: "100%", height: 110, objectFit: "contain" }} />}
           <strong style={{ overflowWrap: "anywhere" }}>{issue.file}</strong><div className="small"><strong>{issue.kind.replace(/_/g, " ")}</strong>: {issue.detail}</div>
           {issue.split && issue.image && issue.index !== undefined && <Link className="btn secondary sm mt" to={`/datasets/edit/${encodeURIComponent(name)}?${new URLSearchParams({ split: issue.split, index: String(issue.index), image: issue.image })}`}>Review in Pose Studio</Link>}
         </div>)}

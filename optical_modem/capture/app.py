@@ -225,6 +225,21 @@ def auth_mode() -> str:
     return "password" if APP_PASSWORD else "anonymous"
 
 
+def cookie_samesite() -> str:
+    """``none`` only when the deployment has opted into a split origin.
+
+    ``lax`` refuses to send the cookie on cross-site subresource requests, which
+    is right for the normal single-domain deployment. But an ``<img src>`` or a
+    download pointed at an API on a *different* origin cannot carry a bearer
+    header -- that is precisely why a token used to be appended to those URLs,
+    landing it in proxy logs, browser history and Referer headers.
+
+    CORS_ORIGINS is the explicit opt-in for the split, and SameSite=none is only
+    ever correct alongside Secure, so a single-origin setup is not weakened.
+    """
+    return "none" if os.environ.get("CORS_ORIGINS", "").strip() else "lax"
+
+
 def _password_ok(given: str) -> bool:
     if not APP_PASSWORD:
         # only reachable with ALLOW_ANONYMOUS=1: see the guard at import time
@@ -357,7 +372,7 @@ async def login(request: Request, response: Response, payload: dict) -> dict:
     # always http, and a Secure cookie sent over plain http is silently dropped
     # by the browser — which looks exactly like "the password is wrong".
     response.set_cookie(COOKIE_NAME, token, max_age=COOKIE_MAX_AGE,
-                        httponly=True, samesite="lax",
+                        httponly=True, samesite=cookie_samesite(),
                         secure=net.cookie_secure(request))
     return {"ok": True, "password_set": bool(APP_PASSWORD), "token": token}
 
@@ -368,7 +383,7 @@ async def logout(request: Request, response: Response) -> dict:
     if _verify(token):
         _revoke_token(token)
     response.delete_cookie(COOKIE_NAME, secure=net.cookie_secure(request),
-                           httponly=True, samesite="lax")
+                           httponly=True, samesite=cookie_samesite())
     return {"ok": True}
 
 
