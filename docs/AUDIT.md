@@ -18,6 +18,52 @@ code lives and where coverage is thinnest (`suite/app.py` 57%, `suite/s2c.py`
 
 ---
 
+## Implementation status (updated 2026-10-29)
+
+Every Phase 1 finding is implemented. Strategic feature **S5** is implemented;
+S1–S4 are not started. The numbers below are the state after this work:
+`333 passed, 13 skipped`, coverage 67% of 8,520 statements, runnable with no
+environment variables from a bare checkout (`make test`).
+
+| # | Finding | Status | Where |
+|---|---------|--------|-------|
+| H-1 | SSE thread-pool exhaustion | **done** | `app.py` asyncio.Queue + stream cap |
+| H-2 | Reflected XSS in finder SVG | **done** | `_css_color()` + CSP on SVG |
+| H-3 | Unbounded `cells` DoS | **done** | all sizing ints bounded via `Query` |
+| H-4 | Throttle XFF bypass + leak | **done** | `ratelimit.py`, `TRUSTED_PROXY_CIDRS` |
+| H-5 | `S2C._rx()` unlocked cache | **done** | locked, keyed on config not transfer |
+| H-6 | Blocking I/O on event loop | **done** | three handlers made sync |
+| M-7 | Volume re-walked per poll | **done** | `Registry.disk()` cached 30 s |
+| M-8 | Redundant warps in `refine_rotation` | **done** | **4.13× faster**, bit-identical |
+| M-9 | Paused job wedges queue | **done** | `pause/resume/reap_paused`, cancel SIGHUPs first |
+| M-10 | Missing security headers | **done** | CSP, frame-ancestors, HSTS, nosniff |
+| M-11 | Auth silently disabled | **done** | fails closed; `ALLOW_ANONYMOUS=1` opts out |
+| M-12 | Token in query string | **done** | header only; cookie `SameSite` for images |
+| L-13 | Dead loop in `ring_values` | **done** | removed |
+| L-14 | Upload index TOCTOU | **done** | check before read, re-check under lock |
+| L-15 | Path validation ×4 | **done** | `suite/paths.py` |
+| L-16 | Documentation drift | **done** | AGENTS.md updated |
+| L-17 | 17 MB of binaries in git | **not started** | needs a decision first — see below |
+| S5 | Separate worker containers | **done** | `queue.py`, `worker.py`, compose profile |
+| — | CI / test config / coverage | **done** | `pyproject.toml`, `.github/workflows/ci.yml` |
+| S1–S4 | Adaptive link, flywheel, eval gate, accounts | **not started** | — |
+
+### The one open question: L-17
+
+`yolo26n-pose.pt` (7.9 MB), a trained `best.pt` (5.9 MB) and ~1 MB more of
+fonts and docs are tracked in git. Moving them out (git-lfs, or fetching a
+base checkpoint at build time) rewrites history for every existing clone, and
+the offline default (`YOLO_OFFLINE=1`) means the image must be able to build
+without network access. That is a decision about how the project ships, not a
+fix I should make unilaterally.
+
+Known limitation of S5: worker containers are behind `SUITE_RUN_JOBS=worker`
+and `inprocess` remains the default, because the recovery path (the reaper) has
+unit tests but no `kill -9` chaos test against a real multi-container
+deployment yet. Add that before making it the default.
+
+---
+
 ## Phase 1 — Critical Fixes & Code Health
 
 ### Severity summary
