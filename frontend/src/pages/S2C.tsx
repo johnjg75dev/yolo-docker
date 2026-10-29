@@ -663,7 +663,7 @@ export function S2C() {
                 }}
               >
                 <img
-                  src={api.qrSvgUrl(qrPairUrl)}
+                  crossOrigin="use-credentials" src={api.qrSvgUrl(qrPairUrl)}
                   alt="Phone receiver QR"
                   style={{
                     width: 112,
@@ -712,7 +712,7 @@ export function S2C() {
               <>
                 <div className="optical-frame-stage" style={{ minHeight: 340 }}>
                   <img
-                    src={api.s2cFrameUrl(activeTransfer.id, frameIdx)}
+                    crossOrigin="use-credentials" src={api.s2cFrameUrl(activeTransfer.id, frameIdx)}
                     alt={`Optical frame ${frameIdx + 1}`}
                     style={{ maxHeight: 420 }}
                   />
@@ -1290,7 +1290,7 @@ export function S2C() {
         <div className="cinema-overlay">
           <div className="cinema-stage">
             <img
-              src={api.s2cFrameUrl(activeTransfer.id, frameIdx)}
+              crossOrigin="use-credentials" src={api.s2cFrameUrl(activeTransfer.id, frameIdx)}
               alt={`Fullscreen optical frame ${frameIdx + 1}`}
             />
           </div>

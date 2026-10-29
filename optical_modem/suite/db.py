@@ -40,6 +40,7 @@ from typing import Any, Iterable, Iterator
 
 from sqlalchemy import (Boolean, DateTime, Float, ForeignKey, Integer, String, Text,
                         UniqueConstraint, create_engine, func, select)
+from sqlalchemy import case, func, update as _sa_update
 from sqlalchemy.orm import (DeclarativeBase, Mapped, Session, mapped_column,
                             relationship, sessionmaker)
 
@@ -205,6 +206,19 @@ class JobRecord(Base):
     returncode: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: written by the worker's heartbeat; a stale value means "the container died"
     heartbeat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: --- job claiming (separate worker containers) ------------------------
+    #: which worker owns this job right now; NULL means unclaimed
+    owner: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    #: when the current claim was taken (compared against heartbeat staleness)
+    claimed_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: how many times this job has been started; a job that keeps dying is
+    #: marked interrupted rather than requeued forever
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    #: JSON argv. Without this a job adopted from the database has no command to
+    #: run -- argv lived only in ``<DATA_DIR>/jobs/<id>/job.json``, which is fine
+    #: for a single process but fatal when the process that adopts the job is not
+    #: the one that enqueued it.
+    arguments: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     project: Mapped[Project | None] = relationship(back_populates="jobs")
 
@@ -215,7 +229,10 @@ class JobRecord(Base):
                 "error": self.error, "meta": _loads(self.meta, {}),
                 "metrics": _loads(self.metrics, {}), "created": self.created,
                 "started": self.started, "finished": self.finished,
-                "returncode": self.returncode, "heartbeat": self.heartbeat}
+                "returncode": self.returncode, "heartbeat": self.heartbeat,
+                "owner": self.owner, "claimed_at": self.claimed_at,
+                "attempts": self.attempts,
+                "arguments": self.arguments}
 
 
 class TransferRecord(Base):
@@ -274,6 +291,10 @@ class Event(Base):
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+#: job statuses used by the claim protocol (mirrors suite.jobs without importing
+#: it, so the store has no dependency on the process-level job machinery)
+QUEUED, RUNNING = "queued", "running"
+
 #: the only project statuses the suite understands.  "development" and
 #: "finished" are the two the user asked for; "archived" is for a project that
 #: was finished and then parked (kept for its artefacts, hidden from the list).
@@ -351,6 +372,38 @@ class Store:
     # ---- plumbing --------------------------------------------------------
     def create_all(self) -> None:
         Base.metadata.create_all(self.engine)
+        self._ensure_columns()
+
+    # Columns added after a deployment already ran must be ALTERed in:
+    # ``create_all`` only creates missing *tables*. Without this, a volume
+    # created before job claiming existed would raise OperationalError on the
+    # first claim -- at runtime, under load, in production.
+    _EXTRA_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        ("jobs", "owner", "VARCHAR(120)"),
+        ("jobs", "claimed_at", "FLOAT"),
+        ("jobs", "attempts", "INTEGER DEFAULT 0"),
+        ("jobs", "arguments", "TEXT"),
+    )
+
+    def _ensure_columns(self) -> None:
+        with self.engine.begin() as conn:
+            for table, column, ddl in self._EXTRA_COLUMNS:
+                try:
+                    existing = {row[1] for row in
+                                conn.exec_driver_sql(f"PRAGMA table_info({table})")} \
+                        if self.kind == "sqlite" else {
+                            row[0] for row in conn.exec_driver_sql(
+                                "SELECT column_name FROM information_schema.columns "
+                                "WHERE table_name = :t", {"t": table})}
+                except Exception:
+                    continue
+                if column in existing:
+                    continue
+                try:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+                except Exception as exc:      # pragma: no cover - concurrent boot
+                    log.warning("could not add %s.%s: %s", table, column, exc)
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -635,10 +688,135 @@ class Store:
             rc = job.get("returncode", row.returncode)
             row.returncode = int(rc) if rc is not None else None
             row.heartbeat = _now()
+            # Persist argv so another process can pick this job up and actually
+            # run it. Guarded on presence: a progress snapshot carries no argv,
+            # and we must not blank a command that is already recorded.
+            argv = job.get("argv")
+            if argv:
+                row.arguments = _dumps([str(a) for a in argv])
             if project_id is not None:
                 row.project_id = project_id
             s.flush()
             return row.as_dict()
+
+    # ---- job claiming (separate worker containers, audit S5) -------------
+    def claim_job(self, jid: str, worker_id: str, ttl: float = 0.0) -> bool:
+        """Atomically take ownership of a queued job. ``True`` if we won.
+
+        This must be ONE conditional UPDATE, not a SELECT followed by an UPDATE.
+        A read-then-write lets two workers both observe ``status='queued'`` and
+        both conclude they won, which is exactly the double-execution the claim
+        exists to prevent -- and it only manifests under load, so it would ship.
+
+        Both engines guarantee that of two concurrent
+        ``UPDATE ... WHERE status='queued'`` statements exactly one reports
+        rowcount 1, so the loser sees 0 and backs off.
+        """
+        now = _now()
+        t = JobRecord.__table__
+        values = {"owner": worker_id, "claimed_at": now, "heartbeat": now,
+                  "status": RUNNING,
+                  "attempts": func.coalesce(t.c.attempts, 0) + 1,
+                  "started": case((t.c.started.is_(None), now), else_=t.c.started)}
+        with self.engine.begin() as conn:
+            res = conn.execute(
+                t.update().where(t.c.id == str(jid), t.c.status == QUEUED).values(**values))
+            if res.rowcount == 1:
+                return True
+            # A job whose owner stopped heartbeating is recoverable: steal it.
+            # Same reasoning -- one statement, so only one thief wins.
+            if ttl > 0:
+                res = conn.execute(
+                    t.update().where(t.c.id == str(jid),
+                                     t.c.owner.is_not(None),
+                                     t.c.heartbeat.is_not(None),
+                                     t.c.heartbeat < (now - ttl)).values(**values))
+                if res.rowcount == 1:
+                    return True
+        return False
+
+    def release_job(self, jid: str, worker_id: str | None = None,
+                    status: str | None = None) -> bool:
+        """Drop a claim. ``worker_id`` restricts release to the current owner."""
+        with self.session() as s:
+            row = s.get(JobRecord, str(jid))
+            if row is None:
+                return False
+            if worker_id is not None and row.owner != worker_id:
+                return False
+            row.owner = None
+            row.claimed_at = None
+            if status:
+                row.status = status
+            s.flush()
+            return True
+
+    def heartbeat_job(self, jid: str, worker_id: str) -> bool:
+        """Refresh liveness. ``False`` if we no longer own the job."""
+        with self.session() as s:
+            row = s.get(JobRecord, str(jid))
+            if row is None or (row.owner is not None and row.owner != worker_id):
+                return False
+            row.heartbeat = _now()
+            s.flush()
+            return True
+
+    def reap_stale_jobs(self, stale_after: float, max_retries: int = 3) -> dict:
+        """Requeue jobs whose owning worker stopped heartbeating.
+
+        A worker that was OOM-killed or rescheduled leaves a job stuck in
+        ``running`` forever -- invisible, because nothing is writing to it. This
+        is the recovery path, and it is the reason the separate-worker mode was
+        marked experimental: without a reaper a single lost worker silently
+        wedges the queue.
+        """
+        now = _now()
+        cutoff = now - max(1.0, stale_after)
+        requeued: list[str] = []
+        dead: list[str] = []
+        with self.session() as s:
+            rows = s.scalars(select(JobRecord).where(
+                JobRecord.status.in_(("running", "queued")),
+                JobRecord.owner.is_not(None),
+            ))
+            for row in list(rows):
+                last = row.heartbeat or row.claimed_at or 0.0
+                if last > cutoff:
+                    continue
+                if int(row.attempts or 0) >= max(1, max_retries):
+                    row.status = "interrupted"
+                    row.owner = None
+                    row.claimed_at = None
+                    row.finished = row.finished or now
+                    row.error = row.error or (
+                        f"gave up after {row.attempts} attempts; last owned by "
+                        f"{row.owner!r}")
+                    dead.append(row.id)
+                else:
+                    row.status = QUEUED
+                    row.owner = None
+                    row.claimed_at = None
+                    row.started = None
+                    requeued.append(row.id)
+            s.flush()
+        return {"requeued": requeued, "interrupted": dead, "stale_after": stale_after}
+
+    def queue_stats(self) -> dict:
+        """Depth and ownership of the queue -- drives /healthz and the UI."""
+        with self.session() as s:
+            def n(*conds):
+                return s.scalar(select(func.count()).select_from(JobRecord).where(*conds)) or 0
+            owners = {}
+            for row in s.scalars(select(JobRecord).where(
+                    JobRecord.status == RUNNING, JobRecord.owner.is_not(None))):
+                owners.setdefault(row.owner, 0)
+                owners[row.owner] += 1
+            return {"queued": n(JobRecord.status == QUEUED),
+                    "running": n(JobRecord.status == RUNNING),
+                    "interrupted": n(JobRecord.status == "interrupted"),
+                    "failed": n(JobRecord.status == "failed"),
+                    "ok": n(JobRecord.status == "ok"),
+                    "by_owner": owners}
 
     def get_job(self, jid: str) -> dict | None:
         with self.session() as s:

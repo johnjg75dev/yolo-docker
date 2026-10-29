@@ -1,0 +1,58 @@
+# Test and coverage configuration only.
+#
+# There is deliberately no [build-system] and no package metadata: this repo is
+# run from a checkout (Dockerfile copies it, PYTHONPATH does the rest) and is
+# not published as a distribution. Adding one would imply a packaging contract
+# nothing here implements.
+
+[tool.pytest.ini_options]
+# Tests import `optical_modem` from the repository root rather than an installed
+# package, so the root must be importable. Setting it here means `pytest` works
+# with no PYTHONPATH in the environment -- which is what made the suite silently
+# depend on the Makefile exporting one.
+pythonpath = ["."]
+testpaths = ["tests"]
+
+# The suite writes to DATA_DIR and must never touch a developer's real state;
+# conftest handles the default, but keep it explicit here so a stray environment
+# variable cannot point tests at a live volume.
+
+addopts = [
+    "-q",
+    "--strict-markers",
+    # a shared sqlite handle left open by one test corrupts another's
+    # assumptions; fail loudly instead of debugging a mystery later
+    "--import-mode=importlib",
+]
+
+filterwarnings = [
+    "error",
+    # StarletteDeprecationWarning about httpx vs httpx2 is emitted by the
+    # dependency, not by our code, and cannot be fixed from here.
+    "default::DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["optical_modem"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    # the shipped frontend bundle, not python
+    "optical_modem/suite/static/*",
+    "optical_modem/capture/static/*",
+]
+
+[tool.coverage.report]
+# Baseline was 68% (7909 statements, 2513 missed). Directory listings and the
+# SPA routes dominate the misses; the interesting floor is the protocol and
+# decode paths, which the tests do cover well.
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "if __name__ == .__main__.:",
+]

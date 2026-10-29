@@ -334,7 +334,7 @@ export function Capture() {
                     <strong style={{ fontSize: 12 }}>1. Laptop Display</strong>
                   </div>
                   <img
-                    src={api.qrSvgUrl(displayUrl)}
+                    crossOrigin="use-credentials" src={api.qrSvgUrl(displayUrl)}
                     alt="Display QR"
                     style={{
                       width: 112,
@@ -366,7 +366,7 @@ export function Capture() {
                     <strong style={{ fontSize: 12 }}>2. Phone Camera</strong>
                   </div>
                   <img
-                    src={api.qrSvgUrl(cameraUrl)}
+                    crossOrigin="use-credentials" src={api.qrSvgUrl(cameraUrl)}
                     alt="Camera QR"
                     style={{
                       width: 112,

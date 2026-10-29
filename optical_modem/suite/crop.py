@@ -11,19 +11,25 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import paths as pmod
+
 
 def paths(dataset, split, filename):
-    if split not in ('train', 'val') or not filename or filename in ('.', '..') or Path(filename).name != filename or '\\' in filename:
-        raise ValueError('Invalid split or filename')
-    image = dataset / 'images' / split / filename
-    label = dataset / 'labels' / split / (Path(filename).stem + '.txt')
-    backup = dataset / '.originals' / split / filename
-    root = dataset.resolve()
-    journal = dataset / '.edit-journal' / split / filename
-    if any(not path.resolve().is_relative_to(root) for path in (image, label, backup, journal)):
-        raise ValueError('Dataset paths must stay within the dataset')
-    if image.is_symlink() or label.is_symlink():
-        raise ValueError('Symbolic link images or labels are not supported')
+    """Resolve an image/label/backup triple, proving each stays in the dataset.
+
+    Containment is delegated to ``paths.resolve_within``, which is the single
+    implementation of this rule; the check used to be re-derived here with
+    slightly different length and dotfile rules than the API endpoints applied.
+    """
+    try:
+        split = pmod.safe_split(split, editable=True)
+        filename = pmod.safe_image_name(filename)
+        image = pmod.resolve_within(dataset, 'images', split, filename, must_exist=False)
+        label = pmod.resolve_within(dataset, 'labels', split,
+                                    Path(filename).stem + '.txt', must_exist=False)
+        backup = pmod.resolve_within(dataset, '.originals', split, filename, must_exist=False)
+    except pmod.UnsafePath as exc:
+        raise ValueError(str(exc)) from exc
     return image, label, backup
 
 

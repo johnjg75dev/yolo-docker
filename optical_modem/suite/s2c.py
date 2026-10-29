@@ -278,16 +278,39 @@ class S2C:
 
     # ---- receive ---------------------------------------------------------
     def _rx(self, tr: Transfer):
-        """A receiver bound to this transfer's config (cached)."""
+        """A receiver bound to this transfer's *config* (locked, cached).
+
+        Two fixes over the previous version:
+
+        * the read-modify-write of the single cache slot was unguarded, so two
+          concurrent decodes could both miss and both construct a receiver --
+          and the last writer won while the loser's model stayed resident;
+        * the key included ``tr.id`` even though the receiver depends only on the
+          frame geometry, weights and mode. Alternating between two transfers
+          (laptop transmits, phone receives) therefore rebuilt the receiver on
+          every single frame, and each build runs ``YOLO(weights)`` -- a model
+          load from disk plus a torch init.
+
+        Keying on the configuration makes the alternation free, and the lock
+        makes the cache safe under the thread-pool concurrency the API uses.
+        """
         from ..receiver import HybridReceiver
 
-        key = (tr.id, self.weights)
-        if self._receiver is None or self._receiver_key != key:
-            self._receiver = HybridReceiver(tr.cfg, mode=self.decode_mode,
-                                            yolo_weights=self.weights,
-                                            yolo_imgsz=448)
+        cfg = tr.cfg
+        layout = cfg.layout
+        key = (cfg.modulation, cfg.ecc, cfg.cell_px, layout.cells, layout.cps,
+               layout.ring, layout.header_rows, layout.finder,
+               layout.finder_span, self.weights, self.decode_mode)
+        with self._lock:
+            cached = self._receiver
+            if cached is not None and self._receiver_key == key:
+                return cached
+            receiver = HybridReceiver(cfg, mode=self.decode_mode,
+                                      yolo_weights=self.weights,
+                                      yolo_imgsz=448)
+            self._receiver = receiver
             self._receiver_key = key
-        return self._receiver
+            return receiver
 
     def decode(self, tr: Transfer, img: np.ndarray) -> dict:
         """Decode one camera still and feed it to the transfer's reassembler."""

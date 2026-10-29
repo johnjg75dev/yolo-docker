@@ -633,9 +633,13 @@ class FrameLayout:
         """
         cells = self.ring_symbols_xy()
         n = mod.n_colors
-        step = 1
-        while np.gcd(step, n) != 1:
-            step += 1
+        # Start a third of the way round the palette (odd, so a 2-colour
+        # palette still steps) and walk until the step is coprime with n, which
+        # is what makes the walk visit every colour before repeating.
+        #
+        # A previous version first computed `step = 1` and looped to the first
+        # coprime -- but gcd(1, n) is always 1, so that loop never iterated and
+        # its result was immediately overwritten here.
         step = max(1, (n // 3) | 1)
         while np.gcd(step, n) != 1:
             step += 1

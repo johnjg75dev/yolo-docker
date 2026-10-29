@@ -72,12 +72,36 @@ services:
       API_HOST: ${API_HOST:-}
       # Explicit frontend origins for cross-origin API deployments.
       CORS_ORIGINS: ${CORS_ORIGINS:-}
-      # The supported production mode is inprocess. The separate worker
-      # profile is experimental and must not run against the same job store.
+      # inprocess (default): this container runs jobs itself.
+      # worker: this container only enqueues; the `worker` service runs them.
+      #   Enable the worker with `docker compose --profile worker up -d` and set
+      #   SUITE_RUN_JOBS=worker here too.
+      #   If you enable the worker but forget this, nothing double-runs: the
+      #   web process takes the claim and the worker sees the job as taken.
+      #   You just get no benefit.
       SUITE_RUN_JOBS: ${SUITE_RUN_JOBS:-inprocess}
-      # How many background jobs may run at once. 1 is right for a 4-core box:
-      # training already uses every core, and a second job would only thrash.
+      # How many background jobs may run at once (per process). 1 is right for a
+      # 4-core box: training already uses every core, and a second job only
+      # thrashes. In worker mode this is the per-worker concurrency.
       SUITE_MAX_JOBS: ${SUITE_MAX_JOBS:-1}
+      # Backlog cap when enqueueing for workers: refuse rather than grow a queue
+      # nothing is draining.
+      SUITE_MAX_QUEUED: ${SUITE_MAX_QUEUED:-50}
+      # A job whose owner has not heartbeated in this long may be claimed by
+      # another worker. Must comfortably exceed SUITE_HEARTBEAT.
+      SUITE_CLAIM_TTL: ${SUITE_CLAIM_TTL:-300}
+      SUITE_HEARTBEAT: ${SUITE_HEARTBEAT:-30}
+      # Give up (rather than requeue forever) after this many attempts. Guards
+      # against an input that reliably triggers the OOM killer.
+      SUITE_MAX_ATTEMPTS: ${SUITE_MAX_ATTEMPTS:-3}
+      # Networks allowed to set X-Forwarded-For. The login throttle trusts the
+      # header ONLY from these; anywhere else the peer address is used, so a
+      # spoofed header cannot rotate past the limit. Empty = trust nothing,
+      # which is correct when the container is exposed directly.
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+      # Refuses to boot without APP_PASSWORD. Set 1 ONLY for a deliberately
+      # open instance on a trusted LAN.
+      ALLOW_ANONYMOUS: ${ALLOW_ANONYMOUS:-0}
       # Force the S2C receiver mode: auto (default) | yolo | classical.
       S2C_DECODE_MODE: ${S2C_DECODE_MODE:-auto}
     volumes:
@@ -95,17 +119,26 @@ services:
       start_period: 40s
     deploy:
       resources:
-        # a 4-core / 8 GB box: leave headroom for Postgres, Redis and the proxy.
-        # Training OOMs? Raise to 4g and lower `batch` on the Train page.
+        # Caps, not reservations. The web process serves requests and does the
+        # interactive decode (S2C, autolabel ~1.4 s/photo), so it needs real CPU;
+        # long training belongs in `worker` where an OOM cannot take the UI down.
+        # On a 4-core box lower both this and the worker limit to fit.
         limits:
-          cpus: "4.0"
-          memory: 5g
+          cpus: "2.0"
+          memory: 2g
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # Long jobs (training, big syntheses) run here instead of inside `suite`, so a
+  # heavy run cannot starve request serving and an OOM kill does not take the UI
+  # down with it. Opt in with:  docker compose --profile worker up -d
+  # Scale out with:            docker compose --profile worker up -d --scale worker=3
+  # (each replica is its own worker id; the claim protocol keeps them from
+  # running the same job twice)
   worker:
-    profiles: ["experimental-worker"]
+    profiles: ["worker"]
+    stop_grace_period: 15m      # let a training run finish before SIGKILL
     build:
       context: .
       dockerfile: Dockerfile
@@ -129,15 +162,28 @@ services:
       YOLO_CONFIG_DIR: /data/.ultralytics
       SUITE_MAX_JOBS: ${SUITE_MAX_JOBS:-1}
       SUITE_PYTHON: ${SUITE_PYTHON:-}
+      SUITE_CLAIM_TTL: ${SUITE_CLAIM_TTL:-300}
+      SUITE_HEARTBEAT: ${SUITE_HEARTBEAT:-30}
+      SUITE_MAX_ATTEMPTS: ${SUITE_MAX_ATTEMPTS:-3}
+      # On SIGTERM, finish the current jobs rather than killing them mid-run --
+      # a training run costs hours. After this, release them so another worker
+      # picks them up instead of leaving them stuck.
+      SUITE_WORKER_DRAIN_TIMEOUT: ${SUITE_WORKER_DRAIN_TIMEOUT:-900}
+      # Poll faster while busy so the queue drains promptly, slower when idle
+      # instead of hammering the database.
+      SUITE_WORKER_IDLE_POLL: ${SUITE_WORKER_IDLE_POLL:-2.0}
+      SUITE_WORKER_BUSY_POLL: ${SUITE_WORKER_BUSY_POLL:-0.5}
       PYTHONPATH: /app
     volumes:
       - suite-data:/data
     command: ["python", "-m", "optical_modem.suite.worker"]
     deploy:
       resources:
+        # Training is the one thing in this stack that wants every core and a
+        # lot of RAM. If runs OOM, raise memory and lower `batch` on the page.
         limits:
           cpus: "4.0"
-          memory: 5g
+          memory: 6g
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }

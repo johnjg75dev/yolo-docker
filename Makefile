@@ -1,16 +1,32 @@
 PY ?= python3
 export PYTHONPATH := $(CURDIR)
 
-.PHONY: help install test info dataset train bench gui render sim clean
+.PHONY: help install install-dev test test-cov frontend build ci info dataset train bench gui render sim clean
 
 help:
 	@grep -E '^[a-z]+:.*##' Makefile | sed 's/:.*##/\t/'
 
-install:            ## install python dependencies
+install:            ## install runtime python dependencies
 	$(PY) -m pip install -r requirements.txt
 
-test:               ## run the test suite
-	$(PY) -m pytest -q
+install-dev:        ## install everything needed to run the tests
+	$(PY) -m pip install -r requirements-dev.txt
+
+test:               ## run the test suite (no env vars needed: see pyproject.toml)
+	$(PY) -m pytest
+
+test-cov:           ## run the suite and report coverage
+	$(PY) -m pytest --cov=optical_modem --cov-report=term-missing
+
+frontend:           ## install frontend dependencies
+	cd frontend && npm ci
+
+build:              ## typecheck + build the SPA into suite/static
+	cd frontend && npm run build
+
+ci:                 ## everything CI runs, in the order CI runs it
+	$(MAKE) test
+	$(MAKE) build
 
 info:               ## capacity table for every modulation x ECC
 	$(PY) -m optical_modem info
@@ -34,4 +50,4 @@ sim:                ## simulated transmitter -> camera -> receiver run
 	$(PY) -m optical_modem sim --level 0.6 --n 10
 
 clean:
-	rm -rf .pytest_cache **/__pycache__ runs
+	rm -rf .pytest_cache **/__pycache__ runs coverage.xml .coverage

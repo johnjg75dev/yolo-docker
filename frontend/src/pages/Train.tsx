@@ -457,7 +457,7 @@ export function Train() {
                     style={{ padding: 6, textDecoration: "none" }}
                   >
                     <img
-                      src={api.runImageUrl(selectedRun, p)}
+                      crossOrigin="use-credentials" src={api.runImageUrl(selectedRun, p)}
                       alt={p}
                       style={{ width: "100%", borderRadius: 6, display: "block" }}
                     />
