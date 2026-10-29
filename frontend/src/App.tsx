@@ -1,46 +1,60 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./hooks/useAuth";
-import { Nav } from "./components/Nav";
+import { Layout } from "./components/Layout";
+
 import { Home } from "./pages/Home";
-import { Login } from "./pages/Login";
 import { Wizard } from "./pages/Wizard";
 import { S2C } from "./pages/S2C";
-import { Datasets } from "./pages/Datasets";
-import { Train } from "./pages/Train";
+import { Lab } from "./pages/Lab";
 import { Projects } from "./pages/Projects";
-import { Capture } from "./pages/Capture";
-import { Settings } from "./pages/Settings";
+import { Datasets } from "./pages/Datasets";
 import { DatasetEditor } from "./pages/DatasetEditor";
+import { Capture } from "./pages/Capture";
+import { Train } from "./pages/Train";
+import { Evaluate } from "./pages/Evaluate";
+import { Models } from "./pages/Models";
 import { Jobs } from "./pages/Jobs";
+import { Settings } from "./pages/Settings";
+import { Guide } from "./pages/Guide";
+import { Login } from "./pages/Login";
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const { authed, checking } = useAuth();
   const location = useLocation();
-
   if (checking) {
     return (
-      <div className="wrap">
-        <div className="card center" style={{ paddingTop: "60px" }}>
-          <div className="pill run">signing in…</div>
+      <div className="wrap" style={{ paddingTop: 48 }}>
+        <div
+          className="card"
+          style={{ maxWidth: 420, margin: "0 auto", textAlign: "center" }}
+        >
+          <span className="pill run">Optical Modem Studio</span>
+          <p className="small mt" style={{ marginBottom: 0 }}>
+            Verifying session…
+          </p>
         </div>
       </div>
     );
   }
-
   if (!authed) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
-
   return <>{children}</>;
 }
 
 export function App() {
   return (
-    <>
-      <Nav />
+    <Layout>
       <Routes>
-        <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route
+          path="/"
+          element={
+            <AuthRoute>
+              <Home />
+            </AuthRoute>
+          }
+        />
         <Route
           path="/wizard"
           element={
@@ -58,18 +72,10 @@ export function App() {
           }
         />
         <Route
-          path="/datasets"
+          path="/lab"
           element={
             <AuthRoute>
-              <Datasets />
-            </AuthRoute>
-          }
-        />
-        <Route
-          path="/train"
-          element={
-            <AuthRoute>
-              <Train />
+              <Lab />
             </AuthRoute>
           }
         />
@@ -82,6 +88,23 @@ export function App() {
           }
         />
         <Route
+          path="/datasets"
+          element={
+            <AuthRoute>
+              <Datasets />
+            </AuthRoute>
+          }
+        />
+        <Route path="/dataset" element={<Navigate to="/datasets" replace />} />
+        <Route
+          path="/datasets/edit/:name"
+          element={
+            <AuthRoute>
+              <DatasetEditor />
+            </AuthRoute>
+          }
+        />
+        <Route
           path="/capture"
           element={
             <AuthRoute>
@@ -90,10 +113,26 @@ export function App() {
           }
         />
         <Route
-          path="/settings"
+          path="/train"
           element={
             <AuthRoute>
-              <Settings />
+              <Train />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/evaluate"
+          element={
+            <AuthRoute>
+              <Evaluate />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/models"
+          element={
+            <AuthRoute>
+              <Models />
             </AuthRoute>
           }
         />
@@ -106,15 +145,25 @@ export function App() {
           }
         />
         <Route
-          path="/datasets/edit/:name"
+          path="/settings"
           element={
             <AuthRoute>
-              <DatasetEditor />
+              <Settings />
+            </AuthRoute>
+          }
+        />
+        <Route
+          path="/guide"
+          element={
+            <AuthRoute>
+              <Guide />
             </AuthRoute>
           }
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </>
+    </Layout>
   );
 }
+
+export default App;

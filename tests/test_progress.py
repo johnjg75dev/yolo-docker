@@ -291,5 +291,6 @@ def test_wizard_page_is_served(client) -> None:
     r = client.get("/wizard")
     assert r.status_code == 200
     assert "Guided setup" in r.text
-    assert "/suite-assets/js/wizard.js" in r.text
-    assert "/suite-assets/js/viz.js" in r.text
+    assert '<div id="root"></div>' in r.text
+    assert "/suite-assets/assets/" in r.text
+    assert "__BUILD__" not in r.text

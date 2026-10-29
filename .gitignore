@@ -8,3 +8,4 @@ datasets/optical/*.cache
 frontend/node_modules/
 frontend/dist/
 *.map
+.venv/

@@ -280,16 +280,16 @@ class JobManager:
         return job
 
     def _spawn(self, job: Job, cwd: str | Path | None = None) -> None:
-        log = open(self.log_path(job.id), "ab", buffering=0)
+        log_fh = open(self.log_path(job.id), "ab", buffering=0)
         try:
             proc = subprocess.Popen(
                 job.argv, cwd=str(cwd or self.project_root), env=self.env,
-                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                stdout=log_fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True,           # own process group -> real cancel
             )
         except OSError as exc:
-            log.write(f"\n[suite] could not start: {exc}\n".encode())
-            log.close()
+            log_fh.write(f"\n[suite] could not start: {exc}\n".encode())
+            log_fh.close()
             with self._lock:
                 job.status, job.error = FAILED, str(exc)
                 job.finished, job.progress = time.time(), 1.0
@@ -301,17 +301,17 @@ class JobManager:
             self._save(job)
         self._emit("job.started", job)
         log.info("job started id=%s pid=%s", job.id, proc.pid)
-        t = threading.Thread(target=self._monitor, args=(job, proc, log),
+        t = threading.Thread(target=self._monitor, args=(job, proc, log_fh),
                              name=f"job-{job.id}", daemon=True)
         self._threads[job.id] = t
         t.start()
 
-    def _monitor(self, job: Job, proc: subprocess.Popen, log) -> None:
+    def _monitor(self, job: Job, proc: subprocess.Popen, log_fh) -> None:
         try:
             rc = proc.wait()
         finally:
             try:
-                log.close()
+                log_fh.close()
             except OSError:
                 pass
         with self._lock:
@@ -373,8 +373,12 @@ class JobManager:
             d["progress"] = max(job.progress, prog)
             d["message"] = msg or job.message
             d["metrics"] = {**job.metrics, **metrics}
-            if msg and getattr(self, "_last_log_msg", {}).get(jid) != msg:
-                self.setdefault("_last_log_msg", {})[jid] = msg
+            last_msgs = getattr(self, "_last_log_msg", None)
+            if last_msgs is None:
+                last_msgs = {}
+                self._last_log_msg = last_msgs
+            if msg and last_msgs.get(jid) != msg:
+                last_msgs[jid] = msg
                 log.info("job %s: %s %s", jid, msg, metrics if metrics else "")
         return d
 
