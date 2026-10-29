@@ -30,11 +30,13 @@ Design notes
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import ipaddress
 import json
 import os
+import re
 import tempfile
 import signal
 import time
@@ -184,11 +186,32 @@ async def _validate_mutation_origin(request: Request, call_next):
 net.install(app)
 
 
+_SVG_PATH = re.compile(r"\.svg$", re.I)
+
+#: Relaxed enough for the PWA shell and the inline styles the SPA emits, tight
+#: enough that an injected script cannot load or run. This is the control that
+#: contains an XSS rather than depending on every interpolation being correct.
+_CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+        "connect-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; "
+        "object-src 'none'")
+
+
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    if net.is_secure(request):
+        response.headers.setdefault("Strict-Transport-Security",
+                                    "max-age=31536000; includeSubDomains")
+    # An SVG fetched as a document (not via <img>) executes script, so it gets a
+    # policy that permits no subresources and no script at all.
+    if _SVG_PATH.search(request.url.path):
+        response.headers["Content-Security-Policy"] = \
+            "default-src 'none'; style-src 'unsafe-inline'; sandbox"
     return response
 
 
@@ -476,9 +499,21 @@ def progress() -> dict:
     return out
 
 
+_CSS_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+                        r"|^[a-zA-Z]{3,20}$"
+                        r"|^rgba?\\([0-9]{1,3},[0-9]{1,3},[0-9]{1,3}(?:,[0-9.]{1,4})?\\)$")
+
+
+def _css_color(value: object, default: str) -> str:
+    """Accept only colour literals; never let user input reach SVG markup raw."""
+    text = str(value or "").strip()
+    return text if _CSS_COLOR.match(text) else default
+
+
 @app.get("/api/suite/finder/{shape}.svg")
 def finder_thumb(shape: str, size: int = 72, fg: str = "#e9f2f7",
-                 bg: str = "#0b0d10") -> Response:
+                 bg: str = "#0b0d10",
+                 css_size: int = Query(72, ge=8, le=512)) -> Response:
     """The finder catalogue as a picture — used by the S2C picker.
 
     Rendered from the same mask the transmitter uses, so the thumbnail cannot
@@ -487,6 +522,13 @@ def finder_thumb(shape: str, size: int = 72, fg: str = "#e9f2f7",
     carry cookies.
     """
     from ..protocol import finder as fnd
+
+    # fg/bg used to be interpolated into SVG attributes unescaped, on an endpoint
+    # that is unauthenticated by design. `?bg=#fff" onload="alert(1)` broke out of
+    # the attribute and executed as script when the URL was opened directly.
+    fg = _css_color(fg, "#e9f2f7")
+    bg = _css_color(bg, "#0b0d10")
+    size = css_size
 
     try:
         shape_obj = fnd.get_shape(shape)
@@ -519,7 +561,8 @@ def finder_thumb(shape: str, size: int = 72, fg: str = "#e9f2f7",
 
 
 @app.get("/api/suite/palette", dependencies=[Depends(require_auth)])
-def palette_table(cells: int = 32, ecc: str = "rs16") -> dict:
+def palette_table(cells: int = Query(32, ge=8, le=256),
+                  ecc: str = Query("rs16", pattern=r"^(none|rs8|rs16|rs32|rs64|ldpc12|ldpc23)$")) -> dict:
     """Colour palettes + capacity per modulation — the data behind the swatches."""
     from ..config import MODULATIONS, FrameLayout, ModemConfig
 
@@ -544,7 +587,7 @@ def palette_table(cells: int = 32, ecc: str = "rs16") -> dict:
 
 
 @app.get("/api/suite/runs/{name}/curve", dependencies=[Depends(require_auth)])
-def run_curve(name: str, limit: int = 400) -> dict:
+def run_curve(name: str, limit: int = Query(400, ge=1, le=20_000)) -> dict:
     """Training curves from a run's ``results.csv`` (Ultralytics writes one).
 
     ``{epochs: [...], series: {"metrics/mAP50-95(B)": [...], "train/box_loss":
@@ -592,7 +635,7 @@ def run_curve(name: str, limit: int = 400) -> dict:
 
 
 @app.get("/api/suite/projects", dependencies=[Depends(require_auth)])
-def list_projects(status: str | None = None) -> dict:
+def list_projects(status: str = Query(None, max_length=32)) -> dict:
     if DB is None:
         return {"projects": [], "enabled": False}
     return {"projects": DB.list_projects(status=status), "enabled": True,
@@ -678,55 +721,83 @@ def state_overview() -> dict:
 
 
 @app.get("/api/suite/events", dependencies=[Depends(require_auth)])
-def recent_events(limit: int = 50, kind: str | None = None) -> dict:
+def recent_events(limit: int = Query(50, ge=1, le=500),
+                  kind: str = Query(None, max_length=64)) -> dict:
     """Recent job/project events (the SSE stream's backlog)."""
     events = BUS.recent(limit) if kind is None else [
         e for e in BUS.recent(max(limit * 4, 200)) if e.get("kind") == kind][:limit]
     return {"events": events, "bus": BUS.info()}
 
 
+#: Hard cap on concurrent SSE streams. Each one used to occupy a thread-pool
+#: worker for up to 15 s; FastAPI runs every ``def`` endpoint on that same pool
+#: (40 threads by default), so ~40 open streams stalled the whole app -- measured
+#: at 11.9 s for a normally-3 ms endpoint. asyncio.Queue removes the thread
+#: entirely; the semaphore is the backstop that keeps a client from opening
+#: hundreds and exhausting memory instead.
+MAX_EVENT_STREAMS = int(os.environ.get("SUITE_MAX_EVENT_STREAMS", "64"))
+_EVENT_STREAM_SLOTS: asyncio.Semaphore | None = None
+
+
+def _stream_slots() -> asyncio.Semaphore:
+    global _EVENT_STREAM_SLOTS
+    if _EVENT_STREAM_SLOTS is None:
+        _EVENT_STREAM_SLOTS = asyncio.Semaphore(MAX_EVENT_STREAMS)
+    return _EVENT_STREAM_SLOTS
+
+
 @app.get("/api/events", dependencies=[Depends(require_auth)])
 async def event_stream(request: Request):
     """Server-Sent Events: job lifecycle without polling.
 
-    The UI's poller stays as the fallback; this is what makes the log feel live
-    and lets a second browser tab / the phone follow a training run.
+    Deliberately thread-free. The previous implementation awaited
+    ``run_in_threadpool(q.get, True, 15.0)``, which held one of AnyIO's 40
+    worker threads for the entire idle wait; 45 open streams took a 3 ms
+    endpoint to 11.9 s. Here the bus callback hands events to the loop and the
+    coroutine awaits an ``asyncio.Queue``, costing nothing while idle.
     """
-    import asyncio
-    import queue as _queue
-
     def fmt(event: dict) -> str:
         return f"event: {event.get('kind', 'message')}\ndata: {json.dumps(event, default=str)}\n\n"
 
-    q: _queue.Queue = _queue.Queue(maxsize=200)
+    slots = _stream_slots()
+    try:
+        asyncio.wait_for(slots.acquire(), timeout=0.1)
+    except (asyncio.TimeoutError, TimeoutError):
+        return JSONResponse({"detail": "too many event streams"}, status_code=429)
+
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    loop = asyncio.get_running_loop()
 
     def on_event(event: dict) -> None:
         try:
-            q.put_nowait(event)
-        except _queue.Full:                     # slow client: drop, never block
-            pass
+            # the bus publishes from job threads and from Redis' listener thread,
+            # so this must be the thread-safe hand-off, not put_nowait directly
+            loop.call_soon_threadsafe(q.put_nowait, event)
+        except (RuntimeError, asyncio.QueueFull):
+            pass                                # loop closed / slow client: drop
 
     unsubscribe = BUS.subscribe(on_event)
 
     async def stream():
         try:
-            backlog = "".join(fmt(e) for e in BUS.recent(20))
-            yield "retry: 3000\n\n" + backlog
+            yield "retry: 3000\n\n" + "".join(fmt(e) for e in BUS.recent(20))
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await run_in_threadpool(q.get, True, 15.0)
-                except _queue.Empty:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                except (asyncio.TimeoutError, TimeoutError):
                     yield ": keep-alive\n\n"    # keeps proxies from closing it
                     continue
                 yield fmt(event)
         finally:
             unsubscribe()
+            slots.release()
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache, no-transform",
-                                      "X-Accel-Buffering": "no"})
+                                      "X-Accel-Buffering": "no",
+                                      "X-Event-Stream-Limit": str(MAX_EVENT_STREAMS)})
 
 
 # --------------------------------------------------------------------------- #
@@ -1222,7 +1293,11 @@ def train_defaults() -> dict:
 
 
 @app.post("/api/suite/train", dependencies=[Depends(require_auth)])
-async def start_training(payload: dict) -> dict:
+def start_training(payload: dict) -> dict:
+    """Sync on purpose: the body does blocking filesystem work (yaml lookup,
+    edit-journal recovery, /proc/meminfo reads). As ``async def`` it stalled the
+    event loop for every other request; as ``def`` Starlette runs it in the
+    thread pool."""
     dataset = str(payload.get("dataset") or "")
     if not dataset:
         raise HTTPException(400, "choose a dataset")
@@ -1310,7 +1385,8 @@ def _run_dataset_name(run_dir: Path) -> str:
 
 
 @app.post("/api/suite/runs/{name}/extend", dependencies=[Depends(require_auth)])
-async def extend_run(name: str, payload: dict | None = None) -> dict:
+def extend_run(name: str, payload: dict | None = None) -> dict:
+    """Sync on purpose (blocking filesystem work) -- see start_training."""
     payload = payload or {}
     run_dir = REG.runs / name
     weights = run_dir / "weights" / "best.pt"
@@ -1356,7 +1432,8 @@ async def extend_run(name: str, payload: dict | None = None) -> dict:
                       status="running", path=str(out))
     return {"job": job.as_dict(), "run": new_name, "base": name}
 @app.post("/api/suite/runs/{name}/resume", dependencies=[Depends(require_auth)])
-async def resume_run(name: str, payload: dict | None = None) -> dict:
+def resume_run(name: str, payload: dict | None = None) -> dict:
+    """Sync on purpose (blocking filesystem work) -- see start_training."""
     payload = payload or {}
     run_dir = REG.runs / name
     weights = run_dir / "weights" / "last.pt"
@@ -1522,7 +1599,7 @@ def delete_model(name: str) -> dict:
 # jobs
 # --------------------------------------------------------------------------- #
 @app.get("/api/jobs", dependencies=[Depends(require_auth)])
-def jobs(kind: str | None = None, limit: int = 30) -> dict:
+def jobs(kind: str = Query(None, max_length=32), limit: int = Query(30, ge=1, le=500)) -> dict:
     out = []
     for j in JOBS.list(kind=kind, limit=limit):
         if j.live:
@@ -1535,7 +1612,7 @@ def jobs(kind: str | None = None, limit: int = 30) -> dict:
 
 
 @app.get("/api/jobs/{jid}", dependencies=[Depends(require_auth)])
-def job(jid: str, lines: int = 120) -> dict:
+def job(jid: str, lines: int = Query(120, ge=10, le=2000)) -> dict:
     snap = JOBS.snapshot(jid, lines=max(10, min(lines, 2000)))
     if snap is None:
         raise HTTPException(404, "no such job")
@@ -1544,43 +1621,35 @@ def job(jid: str, lines: int = 120) -> dict:
 
 @app.post("/api/jobs/{jid}/pause", dependencies=[Depends(require_auth)])
 def pause_job(jid: str) -> dict:
+    """SIGSTOP a job to free its CPU briefly.
+
+    Pause is bounded: the job still holds its execution slot, so a pause that is
+    never resumed blocks everything queued behind it. :func:`JobManager.reap`
+    auto-resumes after ``SUITE_PAUSE_GRACE_SECONDS`` (default 15 min).
+    """
     log.info("job pause id=%s", jid)
-    job_ = JOBS.get(jid)
+    job_ = JOBS.pause(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
-    proc = JOBS._procs.get(jid)
-    if proc is not None and proc.poll() is None:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGSTOP)
-        except OSError:
-            proc.send_signal(signal.SIGSTOP)
-    with JOBS._lock:
-        job_.message = "paused"
-        JOBS._save(job_)
-    JOBS._emit("job.paused", job_)
     return job_.as_dict()
 
 
 @app.post("/api/jobs/{jid}/resume", dependencies=[Depends(require_auth)])
 def resume_job(jid: str) -> dict:
     log.info("job resume id=%s", jid)
-    job_ = JOBS.get(jid)
+    job_ = JOBS.resume(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
-    proc = JOBS._procs.get(jid)
-    if proc is not None and proc.poll() is None:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGCONT)
-        except OSError:
-            proc.send_signal(signal.SIGCONT)
-    with JOBS._lock:
-        job_.message = ""
-        JOBS._save(job_)
-    JOBS._emit("job.resumed", job_)
     return job_.as_dict()
 @app.post("/api/jobs/{jid}/cancel", dependencies=[Depends(require_auth)])
 def cancel_job(jid: str) -> dict:
     log.info("job cancel id=%s", jid)
+    # A paused (SIGSTOPped) job has been holding the only execution slot with no
+    # timeout, so make cancel resume it first: otherwise the SIGTERM is not
+    # delivered until something else continues the process.
+    job_ = JOBS.get(jid)
+    if job_ is not None and (job_.meta.get("paused_at") or 0):
+        JOBS.resume(jid)
     job_ = JOBS.cancel(jid)
     if job_ is None:
         raise HTTPException(404, "no such job")
@@ -1671,7 +1740,7 @@ def s2c_transfers() -> dict:
 
 
 @app.get("/api/suite/s2c/{tid}/frame.png", dependencies=[Depends(require_auth)])
-def s2c_frame(tid: str, index: int = 0) -> Response:
+def s2c_frame(tid: str, index: int = Query(0, ge=0)) -> Response:
     try:
         png = _s2c().frame_png(tid, index)
     except KeyError:
@@ -1695,7 +1764,7 @@ def s2c_payload(tid: str) -> Response:
 
 
 @app.get("/api/suite/s2c/{tid}/preview.jpg", dependencies=[Depends(require_auth)])
-def s2c_preview(tid: str, index: int = 0) -> Response:
+def s2c_preview(tid: str, index: int = Query(0, ge=0)) -> Response:
     try:
         blob = _s2c().frame_jpeg(tid, index)
     except KeyError:

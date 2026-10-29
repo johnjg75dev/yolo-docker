@@ -64,6 +64,9 @@ class Job:
     meta: dict[str, Any] = field(default_factory=dict)
     progress: float = 0.0
     message: str = ""
+    #: epoch time the job was SIGSTOPped, or None. A paused job stays ``live``,
+    #: so with SUITE_MAX_JOBS=1 an un-resumed pause blocks everything behind it.
+    paused_at: float | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
@@ -392,6 +395,76 @@ class JobManager:
                 log.info("job %s: %s %s", jid, msg, metrics if metrics else "")
         return d
 
+    # ---- pause / resume -------------------------------------------------
+    def _signal(self, jid: str, sig) -> bool:
+        """Send ``sig`` to a job's process group. ``True`` if it was delivered."""
+        proc = self._procs.get(jid)
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return True
+        except (OSError, ProcessLookupError):
+            try:
+                proc.send_signal(sig)
+                return True
+            except (OSError, ValueError):
+                return False
+
+    def pause(self, jid: str) -> Job | None:
+        """SIGSTOP the job's process group and remember when.
+
+        A stopped process keeps the job ``live``, so the slot is still held --
+        :func:`reap_paused` is what stops that from being permanent.
+        """
+        job = self.get(jid)
+        if job is None:
+            return None
+        delivered = self._signal(jid, signal.SIGSTOP)
+        with self._lock:
+            job.paused_at = time.time()
+            job.message = "paused"
+            self._save(job)
+        self._emit("job.paused", job)
+        log.info("job paused id=%s signal_delivered=%s", jid, delivered)
+        return job
+
+    def resume(self, jid: str) -> Job | None:
+        """SIGCONT a paused job. Safe to call on a job that is not paused."""
+        job = self.get(jid)
+        if job is None:
+            return None
+        delivered = self._signal(jid, signal.SIGCONT)
+        with self._lock:
+            job.paused_at = None
+            job.message = ""
+            self._save(job)
+        self._emit("job.resumed", job)
+        log.info("job resumed id=%s signal_delivered=%s", jid, delivered)
+        return job
+
+    def reap_paused(self, grace: float = 900.0) -> list[str]:
+        """Auto-resume jobs paused longer than ``grace`` seconds.
+
+        Pause exists to free CPU briefly, not to park a job indefinitely: a
+        forgotten pause with ``SUITE_MAX_JOBS=1`` blocks every later job.
+        Returns the ids that were resumed.
+        """
+        if grace <= 0:
+            return []
+        now = time.time()
+        stale: list[str] = []
+        with self._lock:
+            for jid, job in self._jobs.items():
+                if job.paused_at and (now - job.paused_at) > grace:
+                    stale.append(jid)
+        resumed = []
+        for jid in stale:
+            if self.resume(jid) is not None:
+                resumed.append(jid)
+                log.warning("auto-resumed job %s after %.0fs paused", jid, grace)
+        return resumed
+
     def cancel(self, jid: str) -> Job | None:
         job = self.get(jid)
         if job is None:
@@ -405,6 +478,10 @@ class JobManager:
         self._emit("job.cancelled", job)
         log.info("job cancelled id=%s", jid)
         if proc is not None and proc.poll() is None:
+            # A SIGSTOPped process cannot act on SIGTERM: it stays stopped until
+            # something continues it, so we would sit here for the whole timeout
+            # and then have to SIGKILL. Continue first, then ask politely.
+            self._signal(jid, signal.SIGCONT)
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except OSError:
