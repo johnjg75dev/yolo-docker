@@ -17,24 +17,13 @@ export function Train() {
   const [customModel, setCustomModel] = useState("");
   const [seed, setSeed] = useState("");
   const [project, setProject] = useState("");
-  const [runs, setRuns] = useState<any[]>([]);
   const [trainJobs, setTrainJobs] = useState<any[]>([]);
   const [earlyStop, setEarlyStop] = useState(false);
   const [earlyStopPatience, setEarlyStopPatience] = useState("5");
   const [earlyStopStart, setEarlyStopStart] = useState("0");
   const [evalEvery, setEvalEvery] = useState("1");
-  const [viewRun, setViewRun] = useState("");
-  const [runImgs, setRunImgs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const { show } = useToast();
-
-  useEffect(() => {
-    if (!viewRun) { setRunImgs([]); return; }
-    const load = () => api.runImages(viewRun).then((r) => setRunImgs(r.images || [])).catch(() => {});
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [viewRun]);
 
   useEffect(() => {
     const refresh = () => api.listJobs("train", 20).then(setTrainJobs).catch(() => {});
@@ -57,7 +46,6 @@ export function Train() {
       setProject(d.project);
     }).catch((e) => show(e.message, true));
     api.listDatasets().then(setDatasets).catch((e) => show(e.message, true));
-    api.listRuns().then(setRuns).catch((e) => show(e.message, true));
   }, []);
 
   const handleStart = async (e: React.FormEvent) => {
@@ -81,7 +69,7 @@ export function Train() {
         eval_every: evalEvery ? Number(evalEvery) : 1,
       });
       show("training started");
-      api.listRuns().then(setRuns);
+      api.listJobs("train", 20).then(setTrainJobs);
     } catch (e: any) {
       show(e instanceof Error ? e.message : "start failed", true);
     } finally {
