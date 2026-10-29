@@ -97,6 +97,8 @@ def parse_progress(kind: str, text: str) -> tuple[float, str, dict]:
     """
     if not text:
         return 0.0, "", {}
+    # Ultralytics emits ANSI cursor controls and both old and new tqdm formats.
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     metrics: dict[str, Any] = {}
     progress, message = 0.0, ""
     if kind == "train":
@@ -107,15 +109,13 @@ def parse_progress(kind: str, text: str) -> tuple[float, str, dict]:
             m = re.match(r"^\s+(\d+)/(\d+)\s", last)
             if m:
                 done, total = int(m.group(1)), max(1, int(m.group(2)))
-                # refine with the tqdm bar on the same line (batch progress within
-                # the current epoch).  Ultralytics prints "N/M [...]" twice on
-                # that line: the epoch counter first, then the batch counter after
-                # the colon.  Grab the *last* "a/b [" occurrence.
-                bars = re.findall(r"(\d+)/(\d+)\s*\[", last)
-                if len(bars) >= 2:
-                    bdone, btotal = int(bars[-1][0]), max(1, int(bars[-1][1]))
+                # New Ultralytics uses "... 20% ━━━ 1/5" rather than
+                # "1/5 [..]"; the final fraction is the current batch.
+                fractions = re.findall(r"(?<![\d.])(\d+)/(\d+)(?![\d.])", last)
+                if len(fractions) >= 2:
+                    bdone, btotal = int(fractions[-1][0]), int(fractions[-1][1])
                     if btotal > 0 and bdone < btotal:
-                        progress = min(1.0, ((done - 1) + bdone / btotal) / total)
+                        progress = min(1.0, max(0.0, ((done - 1) + bdone / btotal) / total))
                         message = f"epoch {done}/{total} · {bdone}/{btotal}"
                     else:
                         progress = min(1.0, done / total)
@@ -126,6 +126,12 @@ def parse_progress(kind: str, text: str) -> tuple[float, str, dict]:
         for m in _MAP.finditer(text):
             metrics = {"precision": float(m.group(3)), "recall": float(m.group(4)),
                        "map50": float(m.group(5)), "map50_95": float(m.group(6))}
+        # Pose models include four additional validation columns after box mAP.
+        pose_rows = re.findall(r"\ball\s+\d+\s+\d+" + r"\s+([0-9.]+)" * 8, text)
+        if pose_rows:
+            pose = pose_rows[-1]
+            metrics.update({"pose_precision": float(pose[4]), "pose_recall": float(pose[5]),
+                            "pose_map50": float(pose[6]), "pose_map50_95": float(pose[7])})
     elif kind in ("synth", "merge"):
         hits = [m for m in _TQDM.finditer(text)]
         if hits:
@@ -186,6 +192,10 @@ def read_tail(path: Path, max_bytes: int = TAIL_BYTES) -> str:
 # --------------------------------------------------------------------------- #
 # manager
 # --------------------------------------------------------------------------- #
+class JobCapacityError(RuntimeError):
+    """The configured concurrent job limit has been reached."""
+
+
 class JobManager:
     """Starts, tracks and cancels subprocess jobs; thread-safe, disk-backed."""
 
@@ -257,7 +267,7 @@ class JobManager:
         with self._lock:
             live = [j for j in self._jobs.values() if j.live]
             if len(live) >= self.max_concurrent:
-                raise RuntimeError(
+                raise JobCapacityError(
                     f"{len(live)} jobs already running ({', '.join(j.kind for j in live)}); "
                     "wait for one to finish or cancel it")
             jid = time.strftime("%Y%m%d-%H%M%S") + "-" + kind

@@ -35,6 +35,7 @@ import io
 import ipaddress
 import json
 import os
+import tempfile
 import signal
 import time
 import zipfile
@@ -53,15 +54,19 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.background import BackgroundTask
 
 from .. import net
 from ..capture import app as capture_app
 from ..capture.app import MAX_UPLOAD_BYTES, require_auth  # noqa: F401  (re-exported)
 from . import datasets as dsets
+from . import crop as dataset_crop
+from . import curate as dataset_curate
+from . import quality as dataset_quality
 from . import progress as progress_mod
 from .bus import get_bus
 from .db import get_store
-from .jobs import JobManager
+from .jobs import JobManager, JobCapacityError
 from .registry import Registry, describe_env
 from .s2c import S2C, make_config
 
@@ -79,10 +84,13 @@ DB = get_store()
 #: in-process bus that behaves the same for the single-worker topology.
 BUS = get_bus()
 log.info("suite boot data_dir=%s db=%s bus=%s run_jobs=%s max_jobs=%s", DATA_DIR, "on" if DB is not None else "off", type(BUS).__name__, os.environ.get("SUITE_RUN_JOBS", "inprocess"), os.environ.get("SUITE_MAX_JOBS", "1"))
+_job_mode = os.environ.get("SUITE_RUN_JOBS", "inprocess").lower()
+if _job_mode not in ("inprocess", "inline", "1", "true", "yes"):
+    raise RuntimeError("SUITE_RUN_JOBS must be inprocess; external worker mode is not supported safely")
 JOBS = JobManager(DATA_DIR, project_root=PROJECT_ROOT,
                   python=os.environ.get("SUITE_PYTHON") or None,
                   max_concurrent=int(os.environ.get("SUITE_MAX_JOBS", "1")),
-                  run_inprocess=os.environ.get("SUITE_RUN_JOBS", "inprocess").lower() in ("inprocess", "inline", "1", "true", "yes"),
+                  run_inprocess=True,
                   env={**os.environ, "DATA_DIR": str(DATA_DIR),
                        "YOLO_OFFLINE": os.environ.get("YOLO_OFFLINE", "1"),
                        "PYTHONPATH": str(PROJECT_ROOT)},
@@ -117,6 +125,11 @@ def _s2c() -> S2C:
 app = FastAPI(title="Optical modem suite", docs_url=None, redoc_url=None,
               openapi_url=None)
 
+@app.exception_handler(JobCapacityError)
+async def _job_capacity_error(request: Request, exc: JobCapacityError) -> JSONResponse:
+    return JSONResponse({"detail": str(exc)}, status_code=409)
+
+
 API_HOST = os.environ.get("API_HOST", "").strip().lower()
 
 
@@ -140,24 +153,43 @@ async def _api_host_gate(request: Request, call_next):
                     internal = pa.is_loopback or pa.is_private or pa.is_reserved
                 except ValueError:
                     internal = False
-                if not internal:
+                if not (internal and path in ("/healthz", "/version")):
                     return JSONResponse({"detail": "not found"}, status_code=404)
     return await call_next(request)
-# with cookies.  Origins come from CORS_ORIGINS (comma-separated); when unset we
-# reflect any origin so a self-hosted deployment works without configuration.
+# Cross-origin credentialed access is opt-in; same-origin requests need no CORS.
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_origin_regex=".*" if not _cors_origins else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.middleware("http")
+async def _validate_mutation_origin(request: Request, call_next):
+    # Browsers send Origin for state-changing requests; non-browser clients may
+    # omit it. Same-origin or explicitly configured cross-origin callers only.
+    origin = request.headers.get("origin")
+    if origin and request.method.upper() not in ("GET", "HEAD", "OPTIONS"):
+        own_origin = f"{net.client_scheme(request)}://{net.client_host(request)}"
+        allowed = {value.rstrip("/").lower() for value in _cors_origins}
+        if origin.rstrip("/").lower() != own_origin.lower() and origin.rstrip("/").lower() not in allowed:
+            return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+    return await call_next(request)
+
+
 # TLS terminates at the proxy (Traefik): derive the browser's scheme from
 # X-Forwarded-Proto and keep redirects relative, so https cannot be downgraded
 # into a redirect loop (see optical_modem/net.py)
 net.install(app)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
 
 
 @app.middleware("http")
@@ -207,11 +239,46 @@ def _python_argv() -> list[str]:
     return [os.environ.get("SUITE_PYTHON") or sys.executable, "-u"]
 
 
+def _safe_name(name: str) -> str:
+    if not isinstance(name, str) or not name or len(name) > 120 or name.startswith(".") or Path(name).name != name or "\\" in name or any(ord(c) < 32 for c in name):
+        raise HTTPException(400, "Invalid dataset or run name")
+    return name
+
+
+def _split(split: str) -> str:
+    if split not in ("train", "val", "test"):
+        raise HTTPException(400, "Invalid dataset split")
+    return split
+
+
 def _dataset_path(name: str) -> Path:
+    _safe_name(name)
     p = REG.dataset_dir(name)
+    if p.is_symlink() or not p.resolve().is_relative_to(REG.datasets.resolve()):
+        raise HTTPException(400, "Invalid dataset path")
     if not p.is_dir():
         raise HTTPException(404, f"no dataset {name}")
     return p
+
+
+def _dataset_not_busy(name: str) -> None:
+    for job in JOBS.list(limit=10000):
+        if job.live and (job.meta.get("dataset") == name or name in (job.meta.get("sources") or [])):
+            raise HTTPException(409, f"Dataset is in use by {job.title}; wait for the job to finish")
+
+
+def _start_job(*args, **kwargs):
+    # Serialize job registration with editor operations in the supported
+    # single-web-process deployment. Live jobs then keep their inputs read-only.
+    with dataset_crop._LOCK:
+        return JOBS.start(*args, **kwargs)
+
+
+def _recover_dataset_edits(dataset: Path) -> None:
+    journal = dataset / ".edit-journal"
+    if journal.exists():
+        for ready in journal.glob("*/*/ready"):
+            dataset_crop.recover(dataset, ready.parent.parent.name, ready.parent.name)
 
 
 def _require_yaml(name: str) -> Path:
@@ -698,9 +765,52 @@ def list_datasets() -> dict:
     return {"datasets": out, "root": str(REG.datasets), "enabled": True}
 
 
+@app.post("/api/suite/datasets/{name}/assign", dependencies=[Depends(require_auth)])
+def assign_dataset(name: str, payload: dict) -> dict:
+    if DB is None:
+        raise HTTPException(503, "Project database is disabled")
+    path = _dataset_path(name)
+    project = _known_project(payload.get("project"))
+    if not project:
+        raise HTTPException(400, "Choose a project")
+    old = DB.get_dataset(name)
+    target = _project_or_404(project)
+    if old and old.get("project_id") and old["project_id"] != target["id"] and not payload.get("allow_move"):
+        raise HTTPException(409, "Dataset belongs to another project; confirm moving it")
+    row = DB.upsert_dataset(name, project=project, path=str(path))
+    return {"dataset": row}
+
+
+@app.post("/api/suite/datasets/{name}/curate", dependencies=[Depends(require_auth)])
+def curate_dataset(name: str, payload: dict) -> dict:
+    with dataset_crop._LOCK:
+        source = _dataset_path(name)
+        _recover_dataset_edits(source)
+        dest_name = payload.get("name")
+        if not isinstance(dest_name, str) or not dest_name or dest_name in (".", "..") or Path(dest_name).name != dest_name or dest_name.startswith(".") or len(dest_name) > 120:
+            raise HTTPException(400, "Invalid destination dataset name")
+        _safe_name(dest_name)
+        project = _known_project(payload.get("project"))
+        if project and DB is None:
+            raise HTTPException(503, "Project database is disabled")
+        source_yaml = REG.yaml_of(source)
+        if source_yaml is None:
+            raise HTTPException(400, "Source dataset has no YAML")
+        dest = REG.dataset_dir(dest_name)
+        try:
+            count = dataset_curate.curated_copy(source, dest, payload.get("selected"), source_yaml)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if DB is not None:
+            DB.upsert_dataset(dest_name, project=project, source="curated", status="ready", path=str(dest), images=count, params={"source": name})
+        BUS.publish({"kind": "dataset.ready", "dataset": dest_name})
+        return {"dataset": dest_name, "images": count}
+
+
 @app.post("/api/suite/datasets/synth", dependencies=[Depends(require_auth)])
 def synth_dataset(payload: dict) -> dict:
     name = str(payload.get("name") or "").strip() or time.strftime("synth-%Y%m%d-%H%M%S")
+    _safe_name(name)
     out = REG.dataset_dir(name)
     if out.exists():
         raise HTTPException(409, f"dataset {name} already exists")
@@ -713,7 +823,7 @@ def synth_dataset(payload: dict) -> dict:
                              "--val", str(n_val), "--seed", str(int(payload.get("seed", 1))),
                              "--level", str(float(payload.get("level", 1.0)))]
     project = _known_project(payload.get("project"))
-    job = JOBS.start("synth", f"Generate {n_train}+{n_val} synthetic frames", argv,
+    job = _start_job("synth", f"Generate {n_train}+{n_val} synthetic frames", argv,
                      meta={"dataset": name, "train": n_train, "val": n_val,
                            "project": project})
     if DB is not None:
@@ -731,6 +841,7 @@ def synth_dataset(payload: dict) -> dict:
 @app.post("/api/suite/datasets/captures", dependencies=[Depends(require_auth)])
 def captures_dataset(payload: dict) -> dict:
     name = str(payload.get("name") or "").strip() or time.strftime("real-%Y%m%d-%H%M%S")
+    _safe_name(name)
     out = REG.dataset_dir(name)
     if out.exists():
         raise HTTPException(409, f"dataset {name} already exists")
@@ -740,7 +851,7 @@ def captures_dataset(payload: dict) -> dict:
     if payload.get("verified_only", True):
         argv.append("--verified-only")
     project = _known_project(payload.get("project"))
-    job = JOBS.start("captures", f"Convert captured photos -> {name}", argv,
+    job = _start_job("captures", f"Convert captured photos -> {name}", argv,
                      meta={"dataset": name, "project": project})
     if DB is not None:
         DB.upsert_dataset(name, project=project, source="captures", status="building",
@@ -758,6 +869,7 @@ def merge_dataset(payload: dict) -> dict:
     for s in sources:
         _dataset_path(s)
     name = str(payload.get("name") or "").strip() or time.strftime("train-%Y%m%d-%H%M%S")
+    _safe_name(name)
     out = REG.dataset_dir(name)
     if out.exists():
         raise HTTPException(409, f"dataset {name} already exists")
@@ -766,7 +878,7 @@ def merge_dataset(payload: dict) -> dict:
     for s in sources:
         argv += ["--source", str(REG.dataset_dir(s))]
     project = _known_project(payload.get("project"))
-    job = JOBS.start("merge", f"Merge {len(sources)} dataset(s) -> {name}", argv,
+    job = _start_job("merge", f"Merge {len(sources)} dataset(s) -> {name}", argv,
                      meta={"dataset": name, "sources": sources, "project": project})
     if DB is not None:
         DB.upsert_dataset(name, project=project, source="merge", status="building",
@@ -779,6 +891,13 @@ def dataset_detail(name: str) -> dict:
     return REG.dataset_summary(_dataset_path(name))
 
 
+@app.get("/api/suite/datasets/{name}/quality", dependencies=[Depends(require_auth)])
+def dataset_quality_report(name: str, offset: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=200)) -> dict:
+    dataset = _dataset_path(name)
+    _recover_dataset_edits(dataset)
+    return dataset_quality.inspect(dataset, offset, limit)
+
+
 @app.get("/api/suite/datasets/{name}/preview", dependencies=[Depends(require_auth)])
 def dataset_preview(name: str, split: str = "train", index: int = 0) -> Response:
     blob = dsets.preview(_dataset_path(name), split=split, index=index,
@@ -789,13 +908,24 @@ def dataset_preview(name: str, split: str = "train", index: int = 0) -> Response
                     headers={"Cache-Control": "no-cache"})
 
 
+def _recover_edit(name: str, split: str, filename: str) -> None:
+    if split in ("train", "val"):
+        try:
+            dataset_crop.recover(_dataset_path(name), split, filename)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/suite/datasets/{name}/images", dependencies=[Depends(require_auth)])
-def dataset_images(name: str, split: str = "train", limit: int = 200, offset: int = 0) -> dict:
-    p = REG.dataset_dir(name) / "images" / split
+def dataset_images(name: str, split: str = "train", limit: int = Query(200, ge=1, le=2000), offset: int = Query(0, ge=0)) -> dict:
+    root = _dataset_path(name)
+    p = root / "images" / _split(split)
+    if not p.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(400, "Invalid dataset image path")
     if not p.is_dir():
         return {"images": [], "split": split, "total": 0}
     files = sorted(f.name for f in p.iterdir()
-                   if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"))
+                   if f.is_file() and f.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"))
     total = len(files)
     page = files[offset: offset + limit]
     return {"split": split, "total": total, "images": page}
@@ -803,14 +933,18 @@ def dataset_images(name: str, split: str = "train", limit: int = 200, offset: in
 
 @app.get("/api/suite/datasets/{name}/image/{split}/{filename}", dependencies=[Depends(require_auth)])
 def dataset_image(name: str, split: str, filename: str, size: int = Query(0, ge=0, le=1024)) -> Response:
-    path = REG.dataset_dir(name) / "images" / split / filename
+    _recover_edit(name, split, filename)
+    path = _dataset_path(name) / "images" / _split(split) / filename
+    if Path(filename).name != filename or path.is_symlink() or not path.resolve().is_relative_to(_dataset_path(name).resolve()):
+        raise HTTPException(400, "Invalid image path")
     if not path.is_file():
         raise HTTPException(404, "no such image")
     # Thumbnail mode: resize + disk-cache for fast gallery loads.
     if size and size > 0:
         cache_dir = REG.dataset_dir(name) / ".thumbs" / split / str(size)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cached = cache_dir / (Path(filename).stem + ".jpg")
+        stat = path.stat()
+        cached = cache_dir / (filename + f".{stat.st_mtime_ns}.{stat.st_size}.jpg")
         if not cached.is_file():
             try:
                 with Image.open(path) as im:
@@ -825,23 +959,30 @@ def dataset_image(name: str, split: str, filename: str, size: int = Query(0, ge=
                     media = "image/png"
                 elif path.suffix.lower() == ".webp":
                     media = "image/webp"
-                return Response(data, media_type=media, headers={"Cache-Control": "public, max-age=3600"})
+                elif path.suffix.lower() == ".bmp":
+                    media = "image/bmp"
+                return Response(data, media_type=media, headers={"Cache-Control": "private, no-cache"})
         data = cached.read_bytes()
         return Response(data, media_type="image/jpeg",
-                        headers={"Cache-Control": "public, max-age=86400, immutable"})
+                        headers={"Cache-Control": "private, no-cache"})
     data = path.read_bytes()
     media = "image/jpeg"
     if path.suffix.lower() == ".png":
         media = "image/png"
     elif path.suffix.lower() == ".webp":
         media = "image/webp"
+    elif path.suffix.lower() == ".bmp":
+        media = "image/bmp"
     return Response(data, media_type=media,
-                    headers={"Cache-Control": "public, max-age=3600"})
+                    headers={"Cache-Control": "private, no-cache"})
 
 
 @app.get("/api/suite/datasets/{name}/label/{split}/{filename}", dependencies=[Depends(require_auth)])
 def dataset_label(name: str, split: str, filename: str) -> dict:
-    label_path = REG.dataset_dir(name) / "labels" / split / (Path(filename).stem + ".txt")
+    _recover_edit(name, split, filename)
+    label_path = _dataset_path(name) / "labels" / _split(split) / (Path(filename).stem + ".txt")
+    if label_path.is_symlink() or not label_path.resolve().is_relative_to(_dataset_path(name).resolve()):
+        raise HTTPException(400, "Invalid label path")
     text = label_path.read_text().strip() if label_path.is_file() else ""
     # parse YOLO-pose: class cx cy w h (kp_x kp_y kp_v)*4
     keypoints = []
@@ -858,7 +999,7 @@ def dataset_label(name: str, split: str, filename: str) -> dict:
                                 "v": int(float(parts[i + 2]))})
                     i += 3
                 keypoints = kps
-            except ValueError:
+            except (ValueError, OverflowError):
                 pass
     return {"filename": filename, "text": text, "keypoints": keypoints,
             "path": str(label_path)}
@@ -866,56 +1007,156 @@ def dataset_label(name: str, split: str, filename: str) -> dict:
 
 @app.put("/api/suite/datasets/{name}/label/{split}/{filename}", dependencies=[Depends(require_auth)])
 def save_dataset_label(name: str, split: str, filename: str, payload: dict) -> dict:
-    label_dir = REG.dataset_dir(name) / "labels" / split
-    label_dir.mkdir(parents=True, exist_ok=True)
-    label_path = label_dir / (Path(filename).stem + ".txt")
-    text = str(payload.get("text", "")).strip()
-    if not text and "keypoints" in payload:
-        kps = payload["keypoints"] or []
-        if kps:
-            # reconstruct a minimal label; class 0, full-image box
-            xs = [k["x"] for k in kps]; ys = [k["y"] for k in kps]
-            cx = (min(xs) + max(xs)) / 2; cy = (min(ys) + max(ys)) / 2
-            w = max(xs) - min(xs); h = max(ys) - min(ys)
-            w = max(w, 1e-3); h = max(h, 1e-3)
-            parts = ["0", f"{cx:.6f}", f"{cy:.6f}", f"{w:.6f}", f"{h:.6f}"]
-            for k in kps:
-                parts += [f"{k['x']:.6f}", f"{k['y']:.6f}", str(int(k.get('v', 2)))]
-            text = " ".join(parts)
-    label_path.write_text(text + ("\n" if text else ""))
-    return {"ok": True, "path": str(label_path), "text": text}
+    with dataset_crop._LOCK:
+        _dataset_not_busy(name)
+        ds = _dataset_path(name)
+        _split(split)
+        if split in ("train", "val"):
+            try:
+                dataset_crop.recover(ds, split, filename)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        label_dir = ds / "labels" / split
+        label_dir.mkdir(parents=True, exist_ok=True)
+        label_path = label_dir / (Path(filename).stem + ".txt")
+        if label_path.is_symlink() or not label_path.resolve().is_relative_to(ds.resolve()):
+            raise HTTPException(400, "Invalid label path")
+        text = str(payload.get("text", "")).strip()
+        if "keypoints" in payload:
+            existing = label_path.read_text().strip() if label_path.is_file() else ""
+            if "expected_text" in payload and str(payload["expected_text"]).strip() != existing:
+                raise HTTPException(409, "Label changed since it was loaded; reload before saving")
+            if existing:
+                rows = existing.splitlines()
+                if len(rows) != 1 or len(rows[0].split()) != 17 or rows[0].split()[0] != "0":
+                    raise HTTPException(409, "Pose Studio cannot safely replace this multi-object or unsupported label")
+            kps = payload["keypoints"] or []
+            if kps:
+                import math
+                if len(kps) != 4 or any(not isinstance(k, dict) or not all(isinstance(k.get(c), (int, float)) and math.isfinite(k[c]) and 0 <= k[c] <= 1 for c in ("x", "y")) or k.get("v", 2) not in (0, 1, 2) for k in kps):
+                    raise HTTPException(400, "Expected four valid normalized keypoints")
+                # reconstruct a minimal label; class 0, full-image box
+                xs = [k["x"] for k in kps]; ys = [k["y"] for k in kps]
+                cx = (min(xs) + max(xs)) / 2; cy = (min(ys) + max(ys)) / 2
+                w = max(xs) - min(xs); h = max(ys) - min(ys)
+                w = max(w, 1e-3); h = max(h, 1e-3)
+                parts = ["0", f"{cx:.6f}", f"{cy:.6f}", f"{w:.6f}", f"{h:.6f}"]
+                for k in kps:
+                    parts += [f"{k['x']:.6f}", f"{k['y']:.6f}", str(int(k.get('v', 2)))]
+                text = " ".join(parts)
+        dataset_crop._atomic_write(label_path, (text + ("\n" if text else "")).encode())
+        return {"ok": True, "path": str(label_path), "text": text}
+@app.get("/api/suite/datasets/{name}/crop/{split}/{filename}", dependencies=[Depends(require_auth)])
+def crop_status(name: str, split: str, filename: str) -> dict:
+    try:
+        with dataset_crop._LOCK:
+            dataset = _dataset_path(name)
+            dataset_crop.recover(dataset, split, filename)
+            image, _, backup = dataset_crop.paths(dataset, split, filename)
+            if not image.is_file():
+                raise ValueError("Image not found")
+            with Image.open(image) as im:
+                return {"width": im.width, "height": im.height, "has_backup": (backup / "image").is_file(),
+                        "revision": dataset_crop.revision(dataset, split, filename)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/suite/datasets/{name}/crop/{split}/{filename}", dependencies=[Depends(require_auth)])
+def crop_image(name: str, split: str, filename: str, payload: dict) -> dict:
+    try:
+        with dataset_crop._LOCK:
+            _dataset_not_busy(name)
+            dataset = _dataset_path(name)
+            dataset_crop.recover(dataset, split, filename)
+            if payload.get("revision") != dataset_crop.revision(dataset, split, filename):
+                raise HTTPException(409, "Image or label changed since preview; reload and preview again")
+            dataset_crop.crop(dataset, split, filename, *(payload.get(k) for k in ("x", "y", "width", "height")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/api/suite/datasets/{name}/revert/{split}/{filename}", dependencies=[Depends(require_auth)])
+def revert_image(name: str, split: str, filename: str) -> dict:
+    try:
+        with dataset_crop._LOCK:
+            _dataset_not_busy(name)
+            dataset_crop.revert(_dataset_path(name), split, filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
 @app.get("/api/suite/datasets/{name}/export.zip", dependencies=[Depends(require_auth)])
 def export_dataset_zip(name: str) -> Response:
-    """Download a YOLO-pose dataset directory as a portable .zip archive."""
-    ds_dir = _dataset_path(name)
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in sorted(ds_dir.rglob("*")):
-            if not file_path.is_file():
-                continue
-            rel = file_path.relative_to(ds_dir)
-            if rel.parts and rel.parts[0].startswith("."):
-                continue
-            zf.write(file_path, arcname=str(Path(ds_dir.name) / rel))
-    safe_name = ds_dir.name.replace('"', "")
-    return Response(
-        buf.getvalue(),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}.zip"',
-            "Cache-Control": "no-store",
-        },
-    )
+    """Export a relocatable dataset archive without exposing local paths."""
+    import yaml
+    with dataset_crop._LOCK:
+        ds_dir = _dataset_path(name)
+        _recover_dataset_edits(ds_dir)
+        yaml_file = REG.yaml_of(ds_dir)
+        rewritten = None
+        if yaml_file:
+            try:
+                config = yaml.safe_load(yaml_file.read_text())
+                if not isinstance(config, dict):
+                    raise ValueError("Dataset YAML is not a mapping")
+                configured = config.pop("path", None)
+                root = Path(configured) if configured else ds_dir
+                if not root.is_absolute():
+                    root = ds_dir / root
+                root = root.resolve()
+                if not root.is_relative_to(ds_dir.resolve()):
+                    raise ValueError("Dataset YAML points outside the dataset; cannot export it portably")
+                for key in ("train", "val", "validation", "test", "minival"):
+                    if not config.get(key):
+                        continue
+                    values = config[key] if isinstance(config[key], list) else [config[key]]
+                    portable = []
+                    for value in values:
+                        path = Path(value)
+                        resolved = (path if path.is_absolute() else root / path).resolve()
+                        if not resolved.is_relative_to(ds_dir.resolve()):
+                            raise ValueError("Dataset YAML split points outside the dataset; cannot export it portably")
+                        portable.append(resolved.relative_to(ds_dir.resolve()).as_posix())
+                    config[key] = portable if isinstance(config[key], list) else portable[0]
+                rewritten = yaml.safe_dump(config, sort_keys=False)
+            except (ValueError, TypeError, yaml.YAMLError) as exc:
+                raise HTTPException(400, f"Invalid or non-portable dataset YAML: {exc}") from exc
+        tmp = tempfile.NamedTemporaryFile(prefix="dataset-export-", suffix=".zip", delete=False)
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        try:
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for file_path in sorted(ds_dir.rglob("*")):
+                    if not file_path.is_file() or file_path.is_symlink():
+                        continue
+                    rel = file_path.relative_to(ds_dir)
+                    if rel.parts and rel.parts[0].startswith("."):
+                        continue
+                    if yaml_file and file_path == yaml_file:
+                        zf.writestr(str(Path(ds_dir.name) / rel), rewritten)
+                    else:
+                        zf.write(file_path, arcname=str(Path(ds_dir.name) / rel))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    return FileResponse(tmp_path, media_type="application/zip", filename=f"{ds_dir.name}.zip",
+                        headers={"Cache-Control": "no-store"},
+                        background=BackgroundTask(tmp_path.unlink, missing_ok=True))
 
 
 @app.delete("/api/suite/datasets/{name}", dependencies=[Depends(require_auth)])
 def drop_dataset(name: str) -> dict:
-    gone = REG.drop_dataset(name)
-    if DB is not None:
-        DB.delete_dataset(name)
-    if not gone:
-        raise HTTPException(404, "no such dataset")
-    return {"ok": True}
+    with dataset_crop._LOCK:
+        _dataset_not_busy(name)
+        gone = REG.drop_dataset(name)
+        if DB is not None:
+            DB.delete_dataset(name)
+        if not gone:
+            raise HTTPException(404, "no such dataset")
+        return {"ok": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -986,7 +1227,10 @@ async def start_training(payload: dict) -> dict:
     if not dataset:
         raise HTTPException(400, "choose a dataset")
     yaml_path = _require_yaml(dataset)
+    ds_path = _dataset_path(dataset)
+    _recover_dataset_edits(ds_path)
     name = str(payload.get("name") or "").strip() or time.strftime("run-%Y%m%d-%H%M%S")
+    _safe_name(name)
     out = REG.runs / name
     if out.exists():
         raise HTTPException(409, f"run {name} already exists")
@@ -1000,14 +1244,20 @@ async def start_training(payload: dict) -> dict:
         raise HTTPException(400, "epochs must be 1..2000")
     if not (160 <= imgsz <= 1280):
         raise HTTPException(400, "imgsz must be 160..1280")
-    if not (1 <= batch <= 128):
-        raise HTTPException(400, "batch must be 1..128")
+    if not (0 <= batch <= 128):
+        raise HTTPException(400, "batch must be 0..128")
+    if batch == 0:
+        # Conservative CPU default; avoids GPU-only Ultralytics autobatching.
+        batch = 4
+    device = str(payload.get("device", "auto"))
+    if device == "auto":
+        device = "0" if describe_env().get("cuda") else "cpu"
     argv = _python_argv() + [
         "-m", "optical_modem.data.train_yolo",
         "--data", str(yaml_path),
         "--model", str(payload.get("model", "yolo26n-pose.pt")),
         "--epochs", str(epochs), "--imgsz", str(imgsz), "--batch", str(batch),
-        "--device", str(payload.get("device", "cpu")), 
+        "--device", device,
         "--workers", str(int(payload.get("workers", 2))), 
         "--project", str(REG.runs), "--name", name, 
         "--seed", str(int(payload.get("seed", 0))), 
@@ -1020,13 +1270,13 @@ async def start_training(payload: dict) -> dict:
         argv += ["--mosaic", str(mosaic)] 
     project = _known_project(payload.get("project")) 
     log.info("training started run=%s dataset=%s epochs=%s imgsz=%s batch=%s", name, dataset, epochs, imgsz, batch)
-    job = JOBS.start("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv, 
+    job = _start_job("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv,
                      meta={"run": name, "dataset": dataset, "epochs": epochs, 
                            "imgsz": imgsz, "project": project, 
                            "eval_every": eval_every})
     if DB is not None:
         DB.upsert_run(name, project=project, dataset=dataset, epochs=epochs,
-                      imgsz=imgsz, batch=batch, device=str(payload.get("device", "cpu")),
+                      imgsz=imgsz, batch=batch, device=device,
                       base_model=str(payload.get("model", "")), status="running",
                       path=str(out))
     return {"job": job.as_dict(), "run": name}
@@ -1035,6 +1285,28 @@ async def start_training(payload: dict) -> dict:
 @app.get("/api/suite/runs", dependencies=[Depends(require_auth)])
 def list_runs() -> dict:
     return {"runs": REG.list_runs(), "active": REG.active()}
+
+
+def _run_dataset_name(run_dir: Path) -> str:
+    """Resolve the run's recorded dataset without silently selecting another."""
+    data_path = ""
+    card = run_dir / "weights" / "model_card.json"
+    if card.is_file():
+        try:
+            data_path = str(json.loads(card.read_text()).get("train_args", {}).get("data", ""))
+        except (OSError, ValueError, TypeError):
+            pass
+    if not data_path and (run_dir / "args.yaml").is_file():
+        try:
+            import yaml
+            data_path = str((yaml.safe_load((run_dir / "args.yaml").read_text()) or {}).get("data", ""))
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+            pass
+    if data_path:
+        for dataset in REG.list_datasets():
+            if dataset.get("yaml") == data_path or dataset.get("path") == data_path:
+                return dataset["name"]
+    raise HTTPException(400, "The run's original dataset could not be identified; restore it before continuing")
 
 
 @app.post("/api/suite/runs/{name}/extend", dependencies=[Depends(require_auth)])
@@ -1047,38 +1319,21 @@ async def extend_run(name: str, payload: dict | None = None) -> dict:
     extra = int(payload.get("epochs", 10))
     if not (1 <= extra <= 2000):
         raise HTTPException(400, "epochs must be 1..2000")
-    # original epochs from model_card if present
+    # This is a new fine-tuning run starting from best.pt, so only the
+    # requested additional epochs are run, not the old total again.
     card = run_dir / "weights" / "model_card.json"
-    orig_epochs = 40
-    try:
-        orig_epochs = int(json.loads(card.read_text()).get("train_args", {}).get("epochs", 40))
-    except Exception:
-        pass
-    new_epochs = orig_epochs + extra
+    new_epochs = extra
     new_name = f"{name}-ext{extra}"
     out = REG.runs / new_name
     if out.exists():
         raise HTTPException(409, f"run {new_name} already exists")
-    # reuse dataset from card
-    dataset = ""
-    try:
-        dataset = str(json.loads(card.read_text()).get("train_args", {}).get("data", ""))
-    except Exception:
-        pass
-    # find dataset name by matching path
-    ds_name = None
-    for d in REG.list_datasets():
-        if d.get("yaml") == dataset or d.get("path") == dataset:
-            ds_name = d["name"]; break
-    if not ds_name:
-        # fallback: first dataset
-        ds_list = REG.list_datasets()
-        if ds_list:
-            ds_name = ds_list[0]["name"]
-    if not ds_name:
-        raise HTTPException(400, "no dataset found to extend")
+    ds_name = _run_dataset_name(run_dir)
     yaml_path = _require_yaml(ds_name)
-    imgsz = int(payload.get("imgsz") or json.loads(card.read_text()).get("train_args", {}).get("imgsz", 448))
+    try:
+        recorded_imgsz = json.loads(card.read_text()).get("train_args", {}).get("imgsz", 448)
+    except (OSError, ValueError, TypeError):
+        recorded_imgsz = 448
+    imgsz = int(payload.get("imgsz") or recorded_imgsz)
     batch = int(payload.get("batch", 4))
     device = str(payload.get("device", "cpu"))
     argv = _python_argv() + [
@@ -1092,7 +1347,7 @@ async def extend_run(name: str, payload: dict | None = None) -> dict:
         "--seed", str(int(payload.get("seed", 0))),
     ]
     project = _known_project(payload.get("project"))
-    job = JOBS.start("train", f"Extend {name} (+{extra} epochs)", argv,
+    job = _start_job("train", f"Extend {name} (+{extra} epochs)", argv,
                      meta={"run": new_name, "dataset": ds_name, "epochs": new_epochs,
                            "imgsz": imgsz, "project": project})
     if DB is not None:
@@ -1121,22 +1376,7 @@ async def resume_run(name: str, payload: dict | None = None) -> dict:
         pass
     batch = int(payload.get("batch", 4))
     device = str(payload.get("device", "cpu"))
-    # find dataset
-    dataset = ""
-    try:
-        dataset = str(json.loads(card.read_text()).get("train_args", {}).get("data", ""))
-    except Exception:
-        pass
-    ds_name = None
-    for d in REG.list_datasets():
-        if d.get("yaml") == dataset or d.get("path") == dataset:
-            ds_name = d["name"]; break
-    if not ds_name:
-        ds_list = REG.list_datasets()
-        if ds_list:
-            ds_name = ds_list[0]["name"]
-    if not ds_name:
-        raise HTTPException(400, "no dataset found to resume")
+    ds_name = _run_dataset_name(run_dir)
     yaml_path = _require_yaml(ds_name)
     argv = _python_argv() + [
         "-m", "optical_modem.data.train_yolo",
@@ -1149,7 +1389,7 @@ async def resume_run(name: str, payload: dict | None = None) -> dict:
         "--resume",
     ]
     project = _known_project(payload.get("project"))
-    job = JOBS.start("train", f"Resume {name}", argv,
+    job = _start_job("train", f"Resume {name}", argv,
                      meta={"run": name, "dataset": ds_name, "epochs": epochs,
                            "imgsz": imgsz, "project": project})
     if DB is not None:
@@ -1212,7 +1452,7 @@ def evaluate_run(name: str, payload: dict | None = None) -> dict:
                              "--out", str(out_json)]
     if dataset:
         argv += ["--dataset", str(REG.dataset_dir(dataset))]
-    job = JOBS.start("evaluate", f"Evaluate {safe} ({levels_str})", argv,
+    job = _start_job("evaluate", f"Evaluate {safe} ({levels_str})", argv,
                      meta={"run": safe, "weights": str(weights),
                            "report": str(out_json), "dataset": dataset,
                            "levels": levels_str})
@@ -1844,7 +2084,7 @@ def _require_internal(request: Request) -> None:
 
 
 @app.get("/healthz", dependencies=[Depends(_require_internal)])
-def healthz(request: Request) -> dict:
+def healthz(request: Request, response: Response) -> dict:
     """Liveness + a summary the compose healthcheck and Coolify can read."""
     # The database is part of the health contract: a container whose store is
     # unreachable must fail its healthcheck rather than serve broken pages.
@@ -1855,6 +2095,8 @@ def healthz(request: Request) -> dict:
             db_ok, db_info = True, DB.info()
         except Exception as exc:
             db_ok, db_info = False, {"kind": DB.kind, "error": str(exc)[:200]}
+    if db_ok is False:
+        response.status_code = 503
     return {"ok": db_ok is not False, "service": "optical-modem-suite",
             "root": str(DATA_DIR), "build": net.build_id(),
             "sessions": len(capture_app.STORE.list()),

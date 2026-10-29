@@ -3,6 +3,7 @@ numpy>=1.26
 opencv-python>=4.9
 scipy>=1.11
 reedsolo>=1.7
+pyyaml>=6.0
 
 # neural frame detector + training
 torch>=2.2

@@ -70,8 +70,10 @@ services:
       # Optional: when set, only this host serves /api/*, /healthz, /version.
       # Use with the API subdomain so the frontend domain stops exposing the API.
       API_HOST: ${API_HOST:-}
-      # inprocess (default) runs jobs inside this container; set to `worker` to
-      # delegate to the separate `worker` service (requires Redis + shared volume)
+      # Explicit frontend origins for cross-origin API deployments.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # The supported production mode is inprocess. The separate worker
+      # profile is experimental and must not run against the same job store.
       SUITE_RUN_JOBS: ${SUITE_RUN_JOBS:-inprocess}
       # How many background jobs may run at once. 1 is right for a 4-core box:
       # training already uses every core, and a second job would only thrash.
@@ -103,6 +105,7 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   worker:
+    profiles: ["experimental-worker"]
     build:
       context: .
       dockerfile: Dockerfile

@@ -8,6 +8,7 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
+import { applyTheme, readTheme, THEMES, type Theme } from "../theme";
 import { api } from "../api/client";
 import { useToast } from "../components/Toast";
 import type { DiagnoseResponse } from "../types";
@@ -35,6 +36,7 @@ function formatBytes(b?: number) {
 
 export function Settings() {
   const { show } = useToast();
+  const [theme, setTheme] = useState<Theme>(readTheme);
   const [diag, setDiag] = useState<DiagnoseResponse | null>(null);
   const [status, setStatus] = useState<any>(null);
   const [prefs, setPrefs] = useState<OperatorPrefs>(() => {
@@ -112,6 +114,13 @@ export function Settings() {
           </button>
         </div>
       </div>
+
+      <section className="card" aria-labelledby="appearance-title">
+        <div className="card-header"><div><h2 id="appearance-title">Appearance</h2><p className="small">Colors and fonts apply immediately and are saved in this browser.</p></div></div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 8 }}>
+          {THEMES.map(t => <button type="button" key={t.id} className={theme === t.id ? "" : "secondary"} aria-pressed={theme === t.id} onClick={() => { setTheme(t.id); applyTheme(t.id); }} style={{ display: "block", textAlign: "left" }}><strong>{t.label}</strong><br /><span style={{ fontSize: 11 }}>{t.description}</span></button>)}
+        </div>
+      </section>
 
       <div className="grid-2" style={{ alignItems: "start" }}>
         {/* Proxy, Cookie & Runtime Health */}

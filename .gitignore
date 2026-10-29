@@ -9,3 +9,5 @@ frontend/node_modules/
 frontend/dist/
 *.map
 .venv/
+frontend/test-results/
+frontend/playwright-report/

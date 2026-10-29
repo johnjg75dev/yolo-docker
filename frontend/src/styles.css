@@ -900,3 +900,28 @@ td.num, th.num {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
+
+/* Appearance themes keep the same dark contrast while changing the palette and typography. */
+:root[data-theme="orchid"] {
+  --bg: #0d0914; --bg-elevated: #130e1d; --card: #1a1427; --card-2: #251b36;
+  --inset: #100b18; --border: #352748; --border-strong: #514168;
+  --fg: #f2eafa; --fg-soft: #dbcce9; --muted: #ae9abd; --accent: #c4a0ff;
+  --accent-blue: #b79bff; --font-sans: "Trebuchet MS", ui-sans-serif, sans-serif;
+}
+:root[data-theme="ember"] {
+  --bg: #120d09; --bg-elevated: #1c1510; --card: #261b15; --card-2: #33251b;
+  --inset: #160f0b; --border: #483427; --border-strong: #674a34;
+  --fg: #fff0df; --fg-soft: #ead2bd; --muted: #bea58e; --accent: #ffc078;
+  --accent-blue: #f59e5b; --font-sans: "Segoe UI", Candara, sans-serif;
+}
+:root[data-theme="terminal"] {
+  --bg: #06100b; --bg-elevated: #091910; --card: #102218; --card-2: #173125;
+  --inset: #07150d; --border: #274534; --border-strong: #3b664c;
+  --fg: #d9f9df; --fg-soft: #b9dfc1; --muted: #8cb39a; --accent: #78efa5;
+  --accent-blue: #5cdd9b; --font-sans: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+:root:not([data-theme="studio"]) .sidebar { background: var(--bg-elevated); }
+:root:not([data-theme="studio"]) .card-subtle { background: var(--inset); }
+:root:not([data-theme="studio"]) button:not(.secondary):not(.ghost):not(.tab-btn),
+:root:not([data-theme="studio"]) .btn:not(.secondary):not(.ghost) { background: var(--accent); color: var(--bg); }
+:root:not([data-theme="studio"]) code { color: var(--accent); }

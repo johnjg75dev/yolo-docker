@@ -414,3 +414,50 @@ call `/api/*` on the frontend domain and get 404).
   (`rgb8x2`); true temporal modulation needs camera frame-sync.
 * `yolo26s/m` fine-tuning is a GPU job; the training script and dataset
   generator are model-size agnostic.
+
+### Studio: reuse datasets, monitor training and choose a theme
+
+When creating a project, select an unassigned existing dataset, or use **Assign
+project** in the dataset table. A dataset has one project owner; moving one
+from another project requires confirmation and does not change its files.
+
+Use **Choose images** in the dataset table to browse train and val thumbnails,
+select images across pages and create a new dataset. The selected images and
+matching labels are copied; the source remains unchanged. The new dataset keeps
+the source YAML's class/keypoint schema and can optionally be assigned to a
+project. Include examples in both splits before training.
+
+The training page reconnects to a running training job when reopened and shows
+its status, progress, metrics and recent log alongside the run curves. Settings
+offers Studio, Orchid, Ember and Terminal appearance themes; the choice is
+stored locally in your browser.
+
+### Browser regression tests
+
+The Playwright tests use a disposable dataset and API server; the training
+launch is intercepted so they do not start a real training job. Install the
+suite's Python dependencies in `.venv`, then run:
+
+```bash
+cd frontend
+npm ci
+npx playwright install chromium  # also install Playwright's system dependencies
+npm run test:e2e
+```
+
+Run `VITE_API_BASE=/api npm run build` before the tests; they serve the built frontend through the API server on port 8889. They do not test GPU
+training, deployment networking, or production load.
+
+### Deployment safety notes
+
+The default bundled frontend uses same-origin `/api`; configure `VITE_API_BASE`
+explicitly at build time for a separate API host. Credentialed cross-origin
+access is denied by default; list trusted origins in `CORS_ORIGINS` when needed.
+The proxy must overwrite forwarded headers and be the only route to the app
+when `TRUST_PROXY=1`. Require a strong `APP_PASSWORD` and HTTPS on public hosts.
+
+Use the default `SUITE_RUN_JOBS=inprocess` with a single web worker. The
+optional `experimental-worker` Compose profile is not production-ready; worker
+mode is disabled in the web application to prevent silently lost jobs, and the
+profile must not run alongside the in-process job manager on the same volume. Back up the entire data volume (including hidden `.originals` and
+`.edit-journal` directories); dataset ZIP exports intentionally omit them.

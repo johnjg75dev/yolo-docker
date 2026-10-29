@@ -35,8 +35,10 @@ import hmac
 import json
 import os
 import secrets
+import sqlite3
 import time
 from pathlib import Path
+from contextlib import closing
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request, Response,
                      UploadFile, WebSocket, WebSocketDisconnect)
@@ -64,6 +66,8 @@ STATIC = HERE / "static"
 # --------------------------------------------------------------------------- #
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+if os.environ.get("REQUIRE_PASSWORD", "0").lower() in ("1", "true", "yes", "on") and not APP_PASSWORD:
+    raise RuntimeError("APP_PASSWORD must be configured when REQUIRE_PASSWORD is enabled")
 COOKIE_NAME = "om_capture"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30          # 30 days
 AUTOLABEL = os.environ.get("AUTOLABEL", "1") not in ("0", "false", "no")
@@ -112,6 +116,34 @@ def _sign(value: str) -> str:
     return f"{value}.{mac}"
 
 
+def _revocation_store():
+    """Durable per-token logout revocations; never store bearer tokens."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DATA_DIR / "auth-revocations.sqlite3", timeout=10)
+    db.execute("CREATE TABLE IF NOT EXISTS revoked (digest TEXT PRIMARY KEY, expires REAL NOT NULL)")
+    return db
+
+
+def _token_revoked(token: str) -> bool:
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    with closing(_revocation_store()) as db:
+        return db.execute("SELECT 1 FROM revoked WHERE digest=? AND expires>?", (digest, time.time())).fetchone() is not None
+
+
+def _revoke_token(token: str) -> None:
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    # Tokens have an absolute expiry, so old entries can be removed safely.
+    expires = float(token.rsplit(".", 1)[0]) + COOKIE_MAX_AGE
+    with closing(_revocation_store()) as db, db:
+        db.execute("DELETE FROM revoked WHERE expires<=?", (time.time(),))
+        db.execute("INSERT OR REPLACE INTO revoked (digest, expires) VALUES (?, ?)", (digest, expires))
+
+
+def _auth_candidate(request: Request) -> str:
+    return (request.cookies.get(COOKIE_NAME, "") or request.headers.get("x-om-token", "")
+            or request.query_params.get("_tok", ""))
+
+
 def _verify(token: str) -> bool:
     if not token or "." not in token:
         return False
@@ -123,7 +155,8 @@ def _verify(token: str) -> bool:
         issued = float(value)
     except ValueError:
         return False
-    return (time.time() - issued) < COOKIE_MAX_AGE
+    age = time.time() - issued
+    return 0 <= age < COOKIE_MAX_AGE and not _token_revoked(token)
 
 
 def _password_ok(given: str) -> bool:
@@ -134,11 +167,7 @@ def _password_ok(given: str) -> bool:
 
 
 async def require_auth(request: Request) -> None:
-    cand = (
-        request.cookies.get(COOKIE_NAME, "")
-        or request.headers.get("x-om-token", "")
-        or request.query_params.get("_tok", "")
-    )
+    cand = _auth_candidate(request)
     if not _verify(cand):
         log.debug("auth required (no/invalid cookie) path=%s", request.url.path)
         raise HTTPException(401, "login required")
@@ -266,6 +295,9 @@ async def login(request: Request, response: Response, payload: dict) -> dict:
 
 @app.post("/api/logout")
 async def logout(request: Request, response: Response) -> dict:
+    token = _auth_candidate(request)
+    if _verify(token):
+        _revoke_token(token)
     response.delete_cookie(COOKIE_NAME, secure=net.cookie_secure(request),
                            httponly=True, samesite="lax")
     return {"ok": True}
