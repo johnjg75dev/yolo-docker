@@ -36,6 +36,7 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from contextlib import closing
@@ -48,6 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .. import net
+from ..ratelimit import Throttle, client_ip, throttle_from_env
 try:
     from ..suite.logging_config import configure as _configure_logging, get_logger as _get_logger
     _configure_logging()
@@ -66,6 +68,15 @@ STATIC = HERE / "static"
 # --------------------------------------------------------------------------- #
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+#: Explicit opt-in to an unauthenticated instance. Previously auth was simply
+#: skipped whenever APP_PASSWORD happened to be empty, which meant the documented
+#: local workflow (`uvicorn optical_modem.suite.app:app --host 0.0.0.0`) silently
+#: published a wide-open server -- no login prompt, no warning anywhere.
+ALLOW_ANONYMOUS = os.environ.get("ALLOW_ANONYMOUS", "").lower() in ("1", "true", "yes", "on")
+if not APP_PASSWORD and not ALLOW_ANONYMOUS:
+    raise RuntimeError(
+        "APP_PASSWORD is required. Set a strong password, or set ALLOW_ANONYMOUS=1 "
+        "to run an explicitly open instance (loopback or a trusted LAN only).")
 if os.environ.get("REQUIRE_PASSWORD", "0").lower() in ("1", "true", "yes", "on") and not APP_PASSWORD:
     raise RuntimeError("APP_PASSWORD must be configured when REQUIRE_PASSWORD is enabled")
 COOKIE_NAME = "om_capture"
@@ -104,8 +115,13 @@ app = FastAPI(title="Optical modem capture station", docs_url=None,
 net.install(app)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-#: naive per-IP login throttle (a personal deployment, not a public service)
-_ATTEMPTS: dict[str, list[float]] = {}
+#: Bounded login throttle. Replaces an unbounded ``{ip: [ts]}`` dict that kept an
+#: entry forever for any IP that failed once and never returned (measured: 300
+#: one-shot IPs left 300 entries resident). Keyed on :func:`client_ip`, which
+#: only honours X-Forwarded-For when the peer is a trusted proxy -- the old code
+#: keyed on the raw forwarded value, so rotating that header bypassed the limit
+#: entirely (measured: 30 attempts, 0 refused).
+LOGIN_THROTTLE: Throttle = throttle_from_env("LOGIN")
 
 
 # --------------------------------------------------------------------------- #
@@ -124,10 +140,32 @@ def _revocation_store():
     return db
 
 
+#: Revocations are rare and append-mostly, so we keep the live set in memory and
+#: only touch SQLite when the set changes. Previously every authenticated request
+#: opened a brand-new sqlite connection (measured: 20 requests -> 20 connections)
+#: and blocked the event loop inside an ``async def`` dependency.
+_REVOKED: set[str] = set()
+_REVOKED_LOCK = threading.Lock()
+
+
+def _load_revocations() -> int:
+    """Refresh the in-memory revocation set from durable storage."""
+    try:
+        with closing(_revocation_store()) as db:
+            rows = db.execute("SELECT digest FROM revoked WHERE expires>?",
+                              (time.time(),)).fetchall()
+    except OSError:                      # read-only /data: run without revocations
+        return 0
+    with _REVOKED_LOCK:
+        _REVOKED.clear()
+        _REVOKED.update(str(r[0]) for r in rows)
+    return len(_REVOKED)
+
+
 def _token_revoked(token: str) -> bool:
     digest = hashlib.sha256(token.encode()).hexdigest()
-    with closing(_revocation_store()) as db:
-        return db.execute("SELECT 1 FROM revoked WHERE digest=? AND expires>?", (digest, time.time())).fetchone() is not None
+    with _REVOKED_LOCK:
+        return digest in _REVOKED
 
 
 def _revoke_token(token: str) -> None:
@@ -137,11 +175,30 @@ def _revoke_token(token: str) -> None:
     with closing(_revocation_store()) as db, db:
         db.execute("DELETE FROM revoked WHERE expires<=?", (time.time(),))
         db.execute("INSERT OR REPLACE INTO revoked (digest, expires) VALUES (?, ?)", (digest, expires))
+    with _REVOKED_LOCK:
+        _REVOKED.add(digest)
+
+
+# Revocations are loaded *here* -- after the definitions above -- and only
+# failures that mean "no durable store" are tolerated. A NameError from a bad
+# edit must surface at boot rather than silently disabling logout.
+try:
+    _loaded_revocations = _load_revocations()
+except (OSError, sqlite3.Error) as exc:
+    log.warning("revocation store unavailable, running without it: %s", exc)
+    _loaded_revocations = 0
 
 
 def _auth_candidate(request: Request) -> str:
-    return (request.cookies.get(COOKIE_NAME, "") or request.headers.get("x-om-token", "")
-            or request.query_params.get("_tok", ""))
+    """The session token: HttpOnly cookie first, then the non-browser header.
+
+    A ``?_tok=`` query parameter used to be accepted too. It put a 30-day bearer
+    credential into proxy access logs, browser history and (absent
+    Referrer-Policy) the Referer header -- and the frontend appended it to every
+    image and stream URL in cross-origin deployments. Removed on purpose.
+    """
+    return (request.cookies.get(COOKIE_NAME, "")
+            or request.headers.get("x-om-token", ""))
 
 
 def _verify(token: str) -> bool:
@@ -159,11 +216,23 @@ def _verify(token: str) -> bool:
     return 0 <= age < COOKIE_MAX_AGE and not _token_revoked(token)
 
 
+def auth_mode() -> str:
+    """"password" when a password guards the app, "anonymous" when it does not.
+
+    Surfaced on /api/me and /api/capabilities so the UI can show a persistent
+    banner instead of silently auto-logging in (see ALLOW_ANONYMOUS above).
+    """
+    return "password" if APP_PASSWORD else "anonymous"
+
+
 def _password_ok(given: str) -> bool:
     if not APP_PASSWORD:
-        # no password configured: local/dev use only (the UI says so)
+        # only reachable with ALLOW_ANONYMOUS=1: see the guard at import time
         return True
-    return hmac.compare_digest(given.strip(), APP_PASSWORD)
+    given = given.strip()
+    # compare_digest raises TypeError on non-ASCII str, which would surface as a
+    # 500 rather than a wrong password: encode first so any input is safe.
+    return hmac.compare_digest(given.encode("utf-8"), APP_PASSWORD.encode("utf-8"))
 
 
 async def require_auth(request: Request) -> None:
@@ -260,6 +329,7 @@ def capabilities() -> dict:
         "displays": displays,
         "defaults": {"count": 100, "resolution": DEFAULT_RESOLUTION},
         "password_set": bool(APP_PASSWORD),
+        "auth_mode": auth_mode(),
         "autolabel": AUTOLABEL,
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
     }
@@ -270,17 +340,16 @@ def capabilities() -> dict:
 # --------------------------------------------------------------------------- #
 @app.post("/api/login")
 async def login(request: Request, response: Response, payload: dict) -> dict:
-    ip = request.client.host if request.client else "?"
+    ip = client_ip(request)
     now = time.time()
-    hits = [t for t in _ATTEMPTS.get(ip, []) if now - t < 60.0]
-    if len(hits) >= 10:
-        log.warning("login rate-limited ip=%s", ip)
+    if not LOGIN_THROTTLE.check(ip):
+        log.warning("login rate-limited ip=%s throttle=%s", ip, LOGIN_THROTTLE.stats())
         raise HTTPException(429, "too many attempts, wait a minute")
+    LOGIN_THROTTLE.hit(ip)
     if not _password_ok(str(payload.get("password", ""))):
-        _ATTEMPTS[ip] = hits + [now]
         log.warning("login FAILED ip=%s", ip)
         raise HTTPException(401, "wrong password")
-    _ATTEMPTS.pop(ip, None)
+    LOGIN_THROTTLE.clear(ip)
     token = _sign(str(now))
     log.info("login OK ip=%s", ip)
     # Secure is derived from the *browser's* scheme (X-Forwarded-Proto), not from
@@ -306,7 +375,7 @@ async def logout(request: Request, response: Response) -> dict:
 @app.get("/api/me", dependencies=[Depends(require_auth)])
 async def me(request: Request) -> dict:
     return {"authenticated": True, "role": request.query_params.get("role"),
-            "password_set": bool(APP_PASSWORD)}
+            "password_set": bool(APP_PASSWORD), "auth_mode": auth_mode()}
 
 
 # --------------------------------------------------------------------------- #

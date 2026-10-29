@@ -332,14 +332,63 @@ def test_extend_trains_only_requested_additional_epochs(client, tmp_path, monkey
     assert launched['argv'][launched['argv'].index('--epochs') + 1] == '10'
 
 
-def test_production_password_requirement(tmp_path):
+def _boot_capture(env_overrides):
+    """Import optical_modem.capture.app in a subprocess; return the CompletedProcess."""
     import os
     import subprocess
     import sys
-    env = {**os.environ, 'REQUIRE_PASSWORD': '1', 'APP_PASSWORD': '', 'DATA_DIR': str(tmp_path)}
-    result = subprocess.run([sys.executable, '-c', 'import optical_modem.capture.app'], env=env, capture_output=True, text=True)
-    assert result.returncode != 0
-    assert 'APP_PASSWORD must be configured' in result.stderr
+    env = {**os.environ, 'DATA_DIR': str(tmp_path_hint), **env_overrides}
+    env.pop('APP_PASSWORD', None)
+    env.pop('ALLOW_ANONYMOUS', None)
+    env.update(env_overrides)
+    return subprocess.run([sys.executable, '-c', 'import optical_modem.capture.app'],
+                          env=env, capture_output=True, text=True)
+
+
+def test_production_password_requirement(tmp_path):
+    """A missing password must be fatal, with or without REQUIRE_PASSWORD.
+
+    Previously auth was simply skipped whenever APP_PASSWORD was empty, so the
+    documented `uvicorn ... --host 0.0.0.0` workflow published a wide-open
+    server with no login prompt anywhere.
+    """
+    import os
+    import subprocess
+    import sys
+
+    def boot(overrides):
+        env = {**os.environ, 'DATA_DIR': str(tmp_path)}
+        env.pop('APP_PASSWORD', None)
+        env.pop('ALLOW_ANONYMOUS', None)
+        env.update(overrides)
+        return subprocess.run([sys.executable, '-c', 'import optical_modem.capture.app'],
+                              env=env, capture_output=True, text=True)
+
+    # the old contract: REQUIRE_PASSWORD=1 with no password is fatal
+    r = boot({'REQUIRE_PASSWORD': '1', 'APP_PASSWORD': ''})
+    assert r.returncode != 0
+    assert 'APP_PASSWORD' in r.stderr
+
+    # the new, stricter default: no password is fatal even without REQUIRE_PASSWORD
+    r = boot({'REQUIRE_PASSWORD': '0', 'APP_PASSWORD': ''})
+    assert r.returncode != 0, "must fail closed by default, not run unauthenticated"
+    assert 'APP_PASSWORD' in r.stderr
+
+    # and the explicit opt-out still works
+    r = boot({'ALLOW_ANONYMOUS': '1', 'APP_PASSWORD': ''})
+    assert r.returncode == 0, f"ALLOW_ANONYMOUS=1 must boot: {r.stderr[-400:]}"
+
+
+def test_anonymous_mode_is_reported(tmp_path):
+    """The UI needs to know it is running open, instead of silently auto-logging in."""
+    from starlette.testclient import TestClient
+    import optical_modem.capture.app as capture
+    from fastapi.testclient import TestClient as _TC
+    client = TestClient(capture.app)
+    body = client.get('/api/capabilities').json()
+    assert 'auth_mode' in body
+    assert body['auth_mode'] in ('password', 'anonymous')
+    assert body['auth_mode'] == ('password' if capture.APP_PASSWORD else 'anonymous')
 
 
 def test_security_headers_and_bmp_type(client, tmp_path):
