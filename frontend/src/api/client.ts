@@ -91,6 +91,13 @@ export const api = {
 
   s2cDownload: (tid: string) => `${BASE}/suite/s2c/${encodeURIComponent(tid)}/payload`,
 
+  progress: () => request<any>("/suite/progress"),
+  post: (path: string, body?: any) =>
+    request<any>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }),
   listDatasets: () => request<{ datasets: any[] }>("/suite/datasets").then((r) => r.datasets || []),
   datasetImages: (name: string, split = "train", limit = 200, offset = 0) =>
     request<{ split: string; total: number; images: string[] }>(
