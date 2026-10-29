@@ -28,6 +28,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=4 \
     MKL_NUM_THREADS=4 \
     YOLO_OFFLINE=1 \
+    REQUIRE_PASSWORD=1 \
     YOLO_CONFIG_DIR=/data/.ultralytics
 
 # OpenCV needs libGL/libglib; ultralytics/torch need libgomp; curl for healthchecks
@@ -48,6 +49,8 @@ COPY tests ./tests
 COPY docs ./docs
 # the bundled baseline detector (and any other shipped checkpoints)
 COPY models ./models
+# The default base weights must be available when YOLO_OFFLINE=1.
+COPY yolo26n-pose.pt ./yolo26n-pose.pt
 COPY README.md ./
 
 RUN find /app -name '__pycache__' -type d -prune -exec rm -rf {} + || true

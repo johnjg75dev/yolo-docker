@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getAuthToken } from "../api/client";
+import { api } from "../api/client";
 
 export function useEventStream(
   enabled: boolean,
@@ -15,10 +15,7 @@ export function useEventStream(
       return;
     }
 
-    const tok = getAuthToken();
-    const url = tok
-      ? `/api/events?_tok=${encodeURIComponent(tok)}`
-      : "/api/events";
+    const url = api.eventStreamUrl();
     const es = new EventSource(url, { withCredentials: true });
 
     const handleMsg = (ev: MessageEvent) => {

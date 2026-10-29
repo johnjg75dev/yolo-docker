@@ -39,12 +39,15 @@ export function Train() {
   const [baseModel, setBaseModel] = useState("yolo26n-pose.pt");
   const [epochs, setEpochs] = useState(15);
   const [imgsz, setImgsz] = useState(448);
-  const [batch, setBatch] = useState(0); // 0 = auto RAM-sized
+  const [batch, setBatch] = useState(0); // 0 = conservative default of 4
   const [device, setDevice] = useState("auto");
   const [patience, setPatience] = useState(12);
   const [mosaic, setMosaic] = useState(0.5);
   const [projectSlug, setProjectSlug] = useState(initialProject);
   const [busy, setBusy] = useState(false);
+  const [quality, setQuality] = useState<Awaited<ReturnType<typeof api.datasetQuality>> | null>(null);
+  const [checkingQuality, setCheckingQuality] = useState(false);
+  useEffect(() => setQuality(null), [dataset]);
 
   // Live job + Selected Run Curve inspector
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -79,6 +82,20 @@ export function Train() {
     loadAll();
   }, [loadAll]);
 
+  // Recover a running job after navigating away or refreshing the page.
+  useEffect(() => {
+    let active = true;
+    api.listJobs("train", 30).then(jobs => {
+      if (!active) return;
+      const job = jobs.find(j => j.live);
+      if (job) {
+        setActiveJobId(current => current || job.id);
+        if (job.meta?.run) setSelectedRun(job.meta.run);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
   const loadRunInspection = useCallback((name: string) => {
     if (!name) return;
     api
@@ -106,10 +123,10 @@ export function Train() {
     if (!activeJobId) return;
     const poll = async () => {
       try {
-        const snap = await api.getJob(activeJobId, 50);
+        const snap = await api.getJob(activeJobId, 200);
         setJobSnap(snap);
         loadRunInspection(selectedRun);
-        if (!snap.live) loadAll();
+        if (!snap.live) { loadAll(); clearInterval(t); }
       } catch {
         // ignore
       }
@@ -153,6 +170,7 @@ export function Train() {
     try {
       const res = await api.extendRun(name, { epochs: 10 });
       setActiveJobId(res.job.id);
+      if (res.run) setSelectedRun(res.run);
       show(`Extending ${name} by +10 epochs`);
     } catch (e: any) {
       show(e instanceof Error ? e.message : "Extend failed", true);
@@ -163,6 +181,7 @@ export function Train() {
     try {
       const res = await api.resumeRun(name);
       setActiveJobId(res.job.id);
+      setSelectedRun(name);
       show(`Resuming ${name}`);
     } catch (e: any) {
       show(e instanceof Error ? e.message : "Resume failed", true);
@@ -206,7 +225,7 @@ export function Train() {
         <form onSubmit={handleStartTrain} className="card" style={{ marginBottom: 0 }}>
           <div className="card-header">
             <h2>Launch Training Run</h2>
-            <span className="small mono">RAM-safe batching</span>
+            <span className="small mono">Default batch: 4</span>
           </div>
 
           <div className="grid-2">
@@ -239,6 +258,8 @@ export function Train() {
             </label>
           </div>
 
+          <div className="mt"><button type="button" className="secondary sm" disabled={!dataset || checkingQuality} onClick={async () => { setCheckingQuality(true); try { setQuality(await api.datasetQuality(dataset)); } catch (e) { show(e instanceof Error ? e.message : "Quality check failed", true); } finally { setCheckingQuality(false); } }}>{checkingQuality ? "Checking…" : "Check dataset quality"}</button>
+          {quality && <div className="card-subtle mt"><strong>Train: {quality.counts.train || 0} · Val: {quality.counts.val || 0} · Issues: {quality.issue_count}</strong><p className="small">Missing labels can be intentional background images. Identical images across splits can inflate validation scores.</p>{quality.issues.slice(0, 20).map((issue, i) => <div className="small" key={i}><strong>{issue.kind}</strong>: {issue.file} — {issue.detail}</div>)}{quality.issue_count > 20 && <p className="small">Showing first 20 issues.</p>}</div>}</div>
           <div className="grid-2 mt">
             <label className="field">
               <span>Base Weights / Fine-Tune Source</span>
@@ -296,7 +317,7 @@ export function Train() {
             </label>
 
             <label className="field">
-              <span>Batch (0=Auto)</span>
+              <span>Batch (0=default 4)</span>
               <input
                 type="number"
                 min={0}
@@ -377,6 +398,16 @@ export function Train() {
                   }}
                 />
               </div>
+              <div className="row small mt" style={{ flexWrap: "wrap", gap: 12 }}>
+                <strong>{jobSnap.title}</strong><span>Elapsed: {Math.floor((jobSnap.elapsed || 0) / 60)}m {Math.floor((jobSnap.elapsed || 0) % 60)}s</span>
+                {jobSnap.meta?.dataset && <span>Dataset: {jobSnap.meta.dataset}</span>}
+              </div>
+              {jobSnap.metrics && Object.keys(jobSnap.metrics).length > 0 && <div className="row mt" style={{ flexWrap: "wrap", gap: 8 }}>{Object.entries(jobSnap.metrics).map(([key, value]) => <span className="pill" key={key}>{key}: {typeof value === "number" ? value.toFixed(3) : String(value)}</span>)}</div>}
+              {jobSnap.error && <p role="alert" style={{ color: "var(--err)" }}>{jobSnap.error}</p>}
+              {jobSnap.live && <div className="row mt" style={{ flexWrap: "wrap" }}>
+                <button type="button" className="secondary sm" onClick={async () => { if (!confirm("Cancel this training job?")) return; try { await api.cancelJob(jobSnap.id); setJobSnap(await api.getJob(jobSnap.id, 200)); } catch (e) { show(e instanceof Error ? e.message : "Cancel failed", true); } }}>Cancel job</button>
+              </div>}
+              <details className="mt" open><summary>Training log (last 200 lines)</summary><pre style={{ maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 11, background: "var(--inset)", padding: 10 }}>{jobSnap.tail || "Waiting for training output…"}</pre></details>
               {jobSnap.message && (
                 <p className="small mt" style={{ marginBottom: 0 }}>
                   {jobSnap.message}
@@ -400,6 +431,7 @@ export function Train() {
               onChange={(e) => setSelectedRun(e.target.value)}
               style={{ width: 205 }}
             >
+              {selectedRun !== "yolo26n_optical" && !runs.some(r => r.name === selectedRun) && <option value={selectedRun}>{selectedRun} (starting)</option>}
               <option value="yolo26n_optical">yolo26n_optical (Shipped)</option>
               {runs.map((r) => (
                 <option key={r.name} value={r.name}>

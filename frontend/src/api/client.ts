@@ -60,7 +60,7 @@ function resolveApiUrl(path: string, withQueryToken = false): string {
   } else {
     out = `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
   }
-  return withQueryToken ? appendTokenQuery(out) : out;
+  return withQueryToken && new URL(out, window.location.href).origin !== window.location.origin ? appendTokenQuery(out) : out;
 }
 
 async function parseError(res: Response): Promise<string> {
@@ -93,6 +93,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  eventStreamUrl: () => resolveApiUrl("/events", true),
   // ---------------- Auth & Diagnostics ----------------
   health: () =>
     fetch("/healthz", { credentials: "include" }).then(async (r) => {
@@ -113,8 +114,13 @@ export const api = {
   },
 
   logout: async () => {
-    setAuthToken(null);
-    return request<{ ok: boolean }>("/logout", { method: "POST" });
+    // Send the bearer token before clearing it so cross-origin sessions are
+    // revoked even when the browser does not attach the session cookie.
+    try {
+      return await request<{ ok: boolean }>("/logout", { method: "POST" });
+    } finally {
+      setAuthToken(null);
+    }
   },
 
   authStatus: async () => {
@@ -278,6 +284,19 @@ export const api = {
       )}/${encodeURIComponent(filename)}${size ? `?size=${size}` : ""}`,
       true
     ),
+
+  assignDataset: (name: string, project: string, allowMove = false) =>
+    request(`/suite/datasets/${encodeURIComponent(name)}/assign`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project, allow_move: allowMove }) }),
+  curateDataset: (name: string, destination: string, project: string, selected: Record<string, string[]>) =>
+    request<{ dataset: string; images: number }>(`/suite/datasets/${encodeURIComponent(name)}/curate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: destination, project: project || undefined, selected }) }),
+
+  datasetQuality: (name: string, offset = 0, limit = 200) => request<{ counts: Record<string, number>; issue_count: number; issues: {kind: string; file: string; detail: string; split?: string; image?: string; index?: number}[]; truncated: boolean }>(`/suite/datasets/${encodeURIComponent(name)}/quality?offset=${offset}&limit=${limit}`),
+  cropStatus: (name: string, split: string, filename: string) =>
+    request<{ width: number; height: number; has_backup: boolean; revision: string }>(`/suite/datasets/${encodeURIComponent(name)}/crop/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`),
+  cropImage: (name: string, split: string, filename: string, crop: { x: number; y: number; width: number; height: number; revision: string }) =>
+    request<{ ok: boolean }>(`/suite/datasets/${encodeURIComponent(name)}/crop/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(crop) }),
+  revertImage: (name: string, split: string, filename: string) =>
+    request<{ ok: boolean }>(`/suite/datasets/${encodeURIComponent(name)}/revert/${encodeURIComponent(split)}/${encodeURIComponent(filename)}`, { method: "POST" }),
 
   datasetLabel: (name: string, split: string, filename: string) =>
     request<{

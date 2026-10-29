@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { api } from "../api/client";
 import { useToast } from "../components/Toast";
-import type { ProjectItem } from "../types";
+import type { DatasetSummary, ProjectItem } from "../types";
 
 const STATUSES = ["development", "finished", "archived"] as const;
 
@@ -30,6 +30,8 @@ export function Projects() {
   const [status, setStatus] = useState<string>("development");
   const [tagsText, setTagsText] = useState("optical, yolo26, s2c");
   const [busy, setBusy] = useState(false);
+  const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
+  const [existingDataset, setExistingDataset] = useState("");
 
   // Detail modal
   const [detail, setDetail] = useState<any | null>(null);
@@ -38,6 +40,7 @@ export function Projects() {
     try {
       const list = await api.listProjects();
       setProjects(list);
+      api.listDatasets().then(setDatasets).catch(() => {});
       if (list.length === 0) setShowCreate(true);
     } catch (e: any) {
       show(e instanceof Error ? e.message : "Failed to load projects", true);
@@ -75,7 +78,14 @@ export function Projects() {
         status,
         tags,
       });
-      show(`Project "${finalSlug}" created`);
+      let attachmentError = "";
+      if (existingDataset) {
+        try { await api.assignDataset(existingDataset, finalSlug); }
+        catch (e) { attachmentError = e instanceof Error ? e.message : "unknown error"; }
+      }
+      setExistingDataset("");
+      if (attachmentError) show(`Project created, but dataset could not be attached: ${attachmentError}`, true);
+      else show(`Project "${finalSlug}" created`);
       setTitle("");
       setSlug("");
       setDescription("");
@@ -227,6 +237,9 @@ export function Projects() {
             </label>
           </div>
 
+          <label className="field mt"><span>Add an existing unassigned dataset (optional)</span>
+            <select value={existingDataset} onChange={e => setExistingDataset(e.target.value)}><option value="">None — choose later</option>{datasets.filter(d => !d.project && !d.missing).map(d => <option key={d.name} value={d.name}>{d.name} ({d.images} images)</option>)}</select>
+          </label>
           <div className="row mt" style={{ justifyContent: "flex-end" }}>
             <button type="submit" disabled={busy}>
               <CheckCircle2 size={15} />

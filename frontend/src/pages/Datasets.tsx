@@ -12,6 +12,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { DatasetGallery } from "./DatasetGallery";
+import { DatasetReview } from "./DatasetReview";
 import { api } from "../api/client";
 import { useToast } from "../components/Toast";
 import { useEventStream } from "../hooks/useEventStream";
@@ -58,6 +60,9 @@ export function Datasets() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobSnap, setJobSnap] = useState<JobSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [review, setReview] = useState<string | null>(null);
+  const [gallery, setGallery] = useState<DatasetSummary | null>(null);
 
   // Sample preview modal
   const [previewDs, setPreviewDs] = useState<DatasetSummary | null>(null);
@@ -538,6 +543,8 @@ export function Datasets() {
           <h2>Available Datasets ({datasets.length})</h2>
         </div>
 
+        {review && <DatasetReview key={review} name={review} onClose={() => setReview(null)} />}
+        {gallery && <DatasetGallery key={gallery.name} dataset={gallery} projects={projects} initialProject={projectSlug} onClose={() => setGallery(null)} onCreated={() => { setGallery(null); load(); }} />}
         {datasets.length === 0 ? (
           <div className="empty-state">
             <Database size={28} color="#22d3ee" style={{ marginBottom: 8 }} />
@@ -589,6 +596,16 @@ export function Datasets() {
                         >
                           <Eye size={13} /> Inspect
                         </button>
+                        <button type="button" className="secondary sm" onClick={() => setReview(d.name)}>Check labels</button>
+                        <button type="button" className="secondary sm" onClick={() => setGallery(d)}>Choose images</button>
+                        <select aria-label={`Assign ${d.name} to project`} value={d.project || ""} style={{ width: 155 }} onChange={async e => {
+                          const target = e.target.value;
+                          if (!target) return;
+                          const moving = Boolean(d.project && d.project !== target);
+                          if (moving && !window.confirm(`Move ${d.name} from ${d.project} to ${target}? A dataset can belong to one project.`)) return;
+                          try { await api.assignDataset(d.name, target, moving); show(`Attached ${d.name} to ${target}`); load(); }
+                          catch (err) { show(err instanceof Error ? err.message : "Assignment failed", true); }
+                        }}><option value="">Assign project…</option>{projects.map(p => <option key={p.slug} value={p.slug}>{p.title || p.slug}</option>)}</select>
                         <Link
                           to={`/datasets/edit/${encodeURIComponent(d.name)}`}
                           className="btn secondary sm"
