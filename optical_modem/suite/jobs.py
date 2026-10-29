@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from . import queue as qmod
+
 try:
     from .logging_config import configure as _configure_logging, get_logger as _get_logger
     _configure_logging()
@@ -205,25 +207,58 @@ class JobManager:
     def __init__(self, root: str | Path, python: str | None = None,
                  env: dict[str, str] | None = None, max_concurrent: int = 2,
                  project_root: str | Path | None = None,
-                 store=None, bus=None, run_inprocess: bool = True):
+                 store=None, bus=None, run_inprocess: bool = True,
+                 enqueue_only: bool = False, worker_id: str | None = None):
+        #: ``run_inprocess`` — this process starts subprocesses itself.
+        #: ``enqueue_only`` — this process records jobs but never runs them; a
+        #: separate worker container picks them up. Deliberately two flags
+        #: rather than one enum: the worker is (False, False) while the web
+        #: process beside it is (True, True).
         self.run_inprocess = bool(run_inprocess)
+        self.enqueue_only = bool(enqueue_only)
         self.root = Path(root) / "jobs"
         self.root.mkdir(parents=True, exist_ok=True)
         self.python = python or sys.executable
         self.env = dict(os.environ if env is None else env)
         self.env.setdefault("PYTHONUNBUFFERED", "1")
         self.max_concurrent = int(max_concurrent)
+        #: Backlog cap for enqueue-only mode, where max_concurrent does not
+        #: apply (this process runs nothing). Bounded so a runaway client cannot
+        #: enqueue without limit against a queue nothing is draining.
+        self.max_queued = max(int(os.environ.get("SUITE_MAX_QUEUED", "50")),
+                              self.max_concurrent)
         self.project_root = Path(project_root or Path(__file__).resolve().parents[2])
         #: optional ``suite.db.Store`` — job history lives there, not only in
         #: ``jobs/<id>/job.json``, so a restart does not lose the record
         self.store = store
         #: optional ``suite.bus`` — publishes job.* events for SSE / other workers
         self.bus = bus
+        self.worker_id = worker_id or qmod.worker_id(
+            "web" if self.enqueue_only else ("worker" if not self.run_inprocess else "inproc"))
+        #: claim / heartbeat / release / reap. With no shared store every claim
+        #: succeeds trivially, so the protocol is inert until a second process
+        #: actually contends for the queue.
+        self.queue = qmod.JobQueue(store, worker=self.worker_id, emit=self._queue_emit)
         self._jobs: dict[str, Job] = {}
         self._procs: dict[str, subprocess.Popen] = {}
         self._threads: dict[str, threading.Thread] = {}
+        self._claim_beats: dict[str, tuple] = {}     # jid -> (thread, stop_event)
         self._lock = threading.RLock()
         self._load()
+
+    def _queue_emit(self, event: dict) -> None:
+        """Forward queue lifecycle events (job.claimed / job.requeued) to the bus."""
+        if self.bus is None:
+            return
+        try:
+            self.bus.publish(event)
+        except Exception:                            # pragma: no cover
+            pass
+
+    def _stop_claim_beat(self, jid: str) -> None:
+        entry = self._claim_beats.pop(jid, None)
+        if entry is not None:
+            entry[1].set()                           # thread exits on its own
 
     # ---- disk ------------------------------------------------------------
     def dir(self, jid: str) -> Path:
@@ -254,25 +289,72 @@ class JobManager:
             except TypeError:            # schema drift: ignore the entry
                 continue
             if job.live:
-                # the container went away mid-run: be honest about it
-                job.status = INTERRUPTED
-                job.error = "interrupted by a restart"
-                job.finished = job.finished or time.time()
-                self._save(job)
+                # Only a single-process deployment can conclude that "live at
+                # boot" means dead. With a shared queue a live record is far
+                # more likely to be another worker's job, and marking it
+                # interrupted would kill work that is running fine. The reaper
+                # recovers genuinely orphaned jobs from heartbeat staleness,
+                # which is the signal that actually means "died".
+                if self.run_inprocess or self.store is None:
+                    # the container went away mid-run: be honest about it
+                    job.status = INTERRUPTED
+                    job.error = "interrupted by a restart"
+                    job.finished = job.finished or time.time()
+                    self._save(job)
             self._jobs[job.id] = job
         # newest first for listing
         self._order = sorted(self._jobs, key=lambda j: self._jobs[j].created, reverse=True)
 
     # ---- public ----------------------------------------------------------
+    def tick(self) -> dict:
+        """One worker iteration: recover orphaned work, then start what we can.
+
+        Ordering matters: reap *before* claiming. A job orphaned by a dead
+        worker is invisible for a full TTL if we claim first, because its
+        heartbeat is still recent enough to look alive.
+
+        Returns a summary so the worker loop can log it and the API can show it.
+        """
+        if self.run_inprocess or self.enqueue_only:
+            return {"started": [], "adopted": 0, "requeued": [], "interrupted": []}
+        reaped = self.queue.reap()
+        newly = self.adopt_from_store()
+        started: list[str] = []
+        with self._lock:
+            queued = [j for j in self._jobs.values() if j.status == QUEUED]
+        queued.sort(key=lambda j: (j.created, j.id))     # FIFO; id breaks ties
+        for job in queued:
+            with self._lock:
+                if len(self._procs) >= self.max_concurrent:
+                    break
+            self._spawn(job)
+            if self._procs.get(job.id) is not None:
+                started.append(job.id)
+        return {"started": started, "adopted": newly.get("adopted", 0),
+                "requeued": reaped.get("requeued", []),
+                "interrupted": reaped.get("interrupted", [])}
+
     def start(self, kind: str, title: str, argv: list[str],
               meta: dict | None = None, cwd: str | Path | None = None) -> Job:
         """Launch ``argv`` as a job.  Raises RuntimeError when too many run."""
+        # Capacity is only a local concern when this process actually runs
+        # jobs. In enqueue-only mode the queue is global and shared, so refusing
+        # work because *this* process is busy would reject jobs that an idle
+        # worker could start immediately -- the UI would show a spurious
+        # "too many jobs" while the fleet sits empty.
+        execute_here = self.run_inprocess and not self.enqueue_only
         with self._lock:
             live = [j for j in self._jobs.values() if j.live]
-            if len(live) >= self.max_concurrent:
+            if execute_here and len(live) >= self.max_concurrent:
                 raise JobCapacityError(
                     f"{len(live)} jobs already running ({', '.join(j.kind for j in live)}); "
                     "wait for one to finish or cancel it")
+            if not execute_here and len(live) >= self.max_queued:
+                # Still bound the backlog: an unbounded queue is just a slower,
+                # less obvious way to run out of disk and patience.
+                raise JobCapacityError(
+                    f"{len(live)} jobs already queued (limit {self.max_queued}); "
+                    "wait for the workers to catch up")
             jid = time.strftime("%Y%m%d-%H%M%S") + "-" + kind
             n = 2
             while jid in self._jobs:
@@ -287,12 +369,48 @@ class JobManager:
             self._order.insert(0, jid)
             self._save(job)
         self._emit("job.queued", job)
-        log.info("job queued id=%s kind=%s title=%s", jid, kind, title)
-        if self.run_inprocess:
+        log.info("job queued id=%s kind=%s title=%s by=%s", jid, kind, title,
+                 self.worker_id)
+        # enqueue_only: a worker's tick() claims and spawns this. Spawning here
+        # as well is exactly the double execution this mode exists to prevent.
+        if self.run_inprocess and not self.enqueue_only:
             self._spawn(job, cwd)
         return job
 
     def _spawn(self, job: Job, cwd: str | Path | None = None) -> None:
+        # Claim before doing anything else. Two workers polling the same queue
+        # both see this job as queued; whoever loses this call must walk away,
+        # or the job runs twice -- two Ultralytics processes writing the same
+        # run directory, or two synth jobs appending to the same dataset.
+        if not self.queue.claim(job.id):
+            log.info("job %s already claimed by another worker; skipping", job.id)
+            return
+        # ``start()`` creates this directory, but a job adopted from the store
+        # was created by a *different* process -- and that is the normal path in
+        # worker-container mode, so it cannot rely on start() having run here.
+        try:
+            self.dir(job.id).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.exception("could not create job dir for %s", job.id)
+            self.queue.release(job.id, status=QUEUED)   # let someone else try
+            return
+        if not job.argv:
+            # An adopted record can be incomplete (the enqueueing process died
+            # between writing the row and writing argv). Popen([]) raises a bare
+            # IndexError from deep inside subprocess, which would kill the tick.
+            log.error("job %s has no command to run", job.id)
+            with self._lock:
+                job.status = FAILED
+                job.error = "job has no command (incomplete record)"
+                job.finished, job.progress = time.time(), 1.0
+                self._save(job)
+            self.queue.release(job.id, status=FAILED)
+            return
+        stop = threading.Event()
+        self._claim_beats[job.id] = (self.queue.start_heartbeat(job.id, stop), stop)
+        job.paused_at = None
+        job.meta = dict(job.meta or {})
+        job.meta["worker"] = self.worker_id
         log_fh = open(self.log_path(job.id), "ab", buffering=0)
         try:
             proc = subprocess.Popen(
@@ -307,6 +425,10 @@ class JobManager:
                 job.status, job.error = FAILED, str(exc)
                 job.finished, job.progress = time.time(), 1.0
                 self._save(job)
+            # Release, or the job stays owned by a process that failed to start
+            # it and nothing retries until the TTL expires.
+            self._stop_claim_beat(job.id)
+            self.queue.release(job.id, status=FAILED)
             return
         with self._lock:
             job.status, job.started = RUNNING, time.time()
@@ -329,6 +451,7 @@ class JobManager:
                 pass
         with self._lock:
             self._procs.pop(job.id, None)
+            self._stop_claim_beat(job.id)
             job.returncode = rc
             job.finished = time.time()
             if job.status == CANCELLED:
@@ -348,8 +471,13 @@ class JobManager:
             job.message = msg if job.status == OK else (job.error or msg)
             job.metrics.update(metrics)
             self._save(job)
+        # Terminal: hand the claim back now instead of letting it age out. A job
+        # left claimed blocks its own retry for a full TTL, and in worker mode
+        # nothing else would come along and pick it up.
+        self.queue.release(job.id, status=job.status)
         self._emit("job.finished" if job.status == OK else "job.failed", job)
-        log.info("job finished id=%s status=%s metrics=%s", job.id, job.status, job.metrics)
+        log.info("job finished id=%s status=%s metrics=%s worker=%s", job.id,
+                 job.status, job.metrics, self.worker_id)
 
     def get(self, jid: str) -> Job | None:
         with self._lock:
@@ -545,6 +673,31 @@ class JobManager:
         except Exception:
             pass
 
+    def _argv_from_disk(self, jid: str) -> list[str]:
+        """Recover argv from ``job.json``, or from the ``$ cmd`` line in the log.
+
+        The volume is shared between the web process and every worker, so a job
+        enqueued before this process started usually has its job.json available
+        even if the database row predates the ``arguments`` column.
+        """
+        try:
+            data = json.loads((self.dir(jid) / "job.json").read_text())
+        except (OSError, ValueError):
+            data = None
+        if isinstance(data, dict) and data.get("argv"):
+            return [str(a) for a in data["argv"]]
+        try:
+            first = self.log_path(jid).read_text(errors="replace").splitlines()
+        except OSError:
+            return []
+        for line in first:
+            if line.startswith("$ "):
+                try:
+                    return shlex.split(line[2:])
+                except ValueError:
+                    return []
+        return []
+
     def adopt_from_store(self) -> dict:
         """Import job records that only exist in the database.
 
@@ -567,11 +720,26 @@ class JobManager:
                     continue
                 known = {f: row[f] for f in Job.__dataclass_fields__ if f in row}
                 known.pop("id", None)
+                # argv has to come from somewhere, or adopting a job produces a
+                # Job with no command that fails instantly. Three sources, in
+                # order of reliability: the row, the job.json on the (possibly
+                # shared) volume, and finally the log header written at launch.
+                argv = known.get("argv")
+                if not argv:
+                    raw = (row.get("arguments") or "").strip()
+                    if raw:
+                        try:
+                            argv = json.loads(raw)
+                        except ValueError:
+                            log.warning("job %s has unparseable arguments", jid)
+                            argv = []
+                if not argv:
+                    argv = self._argv_from_disk(jid)
                 try:
-                    job = Job(id=jid, **{**known, "argv": known.get("argv") or []})
+                    job = Job(id=jid, **{**known, "argv": [str(a) for a in argv]})
                 except TypeError:
                     continue
-                if job.live:
+                if job.live and (self.run_inprocess or self.store is None):
                     job.status = INTERRUPTED
                     job.error = job.error or "interrupted by a restart"
                     job.finished = job.finished or time.time()
