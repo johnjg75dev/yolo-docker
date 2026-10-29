@@ -30,11 +30,14 @@ Design notes
 """
 from __future__ import annotations
 
+import base64
 import io
 import ipaddress
 import json
 import os
+import signal
 import time
+import zipfile
 from pathlib import Path
 from PIL import Image
 from typing import Any
@@ -488,6 +491,10 @@ def run_curve(name: str, limit: int = 400) -> dict:
         raise HTTPException(400, "bad run name")
     run_dir = REG.runs / safe
     csv_path = run_dir / "results.csv"
+    if not csv_path.exists():
+        ship_csv = PROJECT_ROOT / "models" / safe / "results.csv"
+        if ship_csv.exists():
+            csv_path = ship_csv
     if not csv_path.exists():                    # interrupted or hand-made run
         return {"name": safe, "epochs": [], "series": {}, "source": None}
     epochs: list[int] = []
@@ -877,6 +884,30 @@ def save_dataset_label(name: str, split: str, filename: str, payload: dict) -> d
             text = " ".join(parts)
     label_path.write_text(text + ("\n" if text else ""))
     return {"ok": True, "path": str(label_path), "text": text}
+@app.get("/api/suite/datasets/{name}/export.zip", dependencies=[Depends(require_auth)])
+def export_dataset_zip(name: str) -> Response:
+    """Download a YOLO-pose dataset directory as a portable .zip archive."""
+    ds_dir = _dataset_path(name)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in sorted(ds_dir.rglob("*")):
+            if not file_path.is_file():
+                continue
+            rel = file_path.relative_to(ds_dir)
+            if rel.parts and rel.parts[0].startswith("."):
+                continue
+            zf.write(file_path, arcname=str(Path(ds_dir.name) / rel))
+    safe_name = ds_dir.name.replace('"', "")
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.delete("/api/suite/datasets/{name}", dependencies=[Depends(require_auth)])
 def drop_dataset(name: str) -> dict:
     gone = REG.drop_dataset(name)
@@ -981,7 +1012,12 @@ async def start_training(payload: dict) -> dict:
         "--project", str(REG.runs), "--name", name, 
         "--seed", str(int(payload.get("seed", 0))), 
         "--patience", str(patience), "--early-stop-start", str(early_stop_start), 
-    ] 
+    ]
+    if payload.get("mosaic") is not None:
+        mosaic = float(payload["mosaic"])
+        if not (0.0 <= mosaic <= 1.0):
+            raise HTTPException(400, "mosaic must be 0.0..1.0")
+        argv += ["--mosaic", str(mosaic)] 
     project = _known_project(payload.get("project")) 
     log.info("training started run=%s dataset=%s epochs=%s imgsz=%s batch=%s", name, dataset, epochs, imgsz, batch)
     job = JOBS.start("train", f"Train {name} ({epochs} epochs @ {imgsz}px)", argv, 
@@ -1145,31 +1181,52 @@ def run_image(name: str, filename: str) -> Response:
 @app.post("/api/suite/runs/{name}/evaluate", dependencies=[Depends(require_auth)])
 def evaluate_run(name: str, payload: dict | None = None) -> dict:
     payload = payload or {}
-    run = REG.runs / name
+    safe = Path(str(name)).name
+    run = REG.runs / safe
     weights = run / "weights" / "best.pt"
     if not weights.exists():
-        raise HTTPException(404, f"run {name} has no best.pt")
+        ship_weights = PROJECT_ROOT / "models" / safe / "weights" / "best.pt"
+        if ship_weights.exists():
+            weights = ship_weights
+            run.mkdir(parents=True, exist_ok=True)
+        else:
+            raise HTTPException(404, f"run {name} has no best.pt")
     dataset = str(payload.get("dataset") or "")
     if dataset:
         _require_yaml(dataset)
-    level = float(payload.get("level", 0.6))
-    n = int(payload.get("n", 12))
+    levels_raw = payload.get("levels")
+    if levels_raw is None or str(levels_raw).strip() == "":
+        levels_str = str(float(payload.get("level", 0.6)))
+    elif isinstance(levels_raw, (list, tuple)):
+        levels_str = ",".join(str(float(x)) for x in levels_raw)
+    else:
+        parts = [str(float(x.strip())) for x in str(levels_raw).split(",") if x.strip()]
+        levels_str = ",".join(parts) if parts else "0.2,0.6,1.0"
+    n = max(1, min(200, int(payload.get("n", 12))))
+    imgsz = max(160, min(1280, int(payload.get("imgsz", 448))))
     out_json = run / "eval.json"
     argv = _python_argv() + [str(PROJECT_ROOT / "scripts" / "evaluate.py"),
                              "--weights", str(weights),
-                             "--n", str(n), "--levels", str(level),
+                             "--n", str(n), "--imgsz", str(imgsz),
+                             "--levels", levels_str,
                              "--out", str(out_json)]
     if dataset:
         argv += ["--dataset", str(REG.dataset_dir(dataset))]
-    job = JOBS.start("evaluate", f"Evaluate {name}", argv,
-                     meta={"run": name, "weights": str(weights),
-                           "report": str(out_json), "dataset": dataset})
+    job = JOBS.start("evaluate", f"Evaluate {safe} ({levels_str})", argv,
+                     meta={"run": safe, "weights": str(weights),
+                           "report": str(out_json), "dataset": dataset,
+                           "levels": levels_str})
     return {"job": job.as_dict(), "report": str(out_json)}
 
 
 @app.get("/api/suite/runs/{name}/eval", dependencies=[Depends(require_auth)])
 def eval_report(name: str) -> dict:
-    path = REG.runs / name / "eval.json"
+    safe = Path(str(name)).name
+    path = REG.runs / safe / "eval.json"
+    if not path.exists() and safe == "yolo26n_optical":
+        doc_eval = PROJECT_ROOT / "docs" / "model_eval.json"
+        if doc_eval.exists():
+            path = doc_eval
     if not path.exists():
         raise HTTPException(404, "no evaluation yet")
     try:
@@ -1183,8 +1240,8 @@ def eval_report(name: str) -> dict:
 # --------------------------------------------------------------------------- #
 @app.get("/api/suite/models", dependencies=[Depends(require_auth)])
 def models() -> dict:
-    return {"models": REG.list_models(), "active": REG.active(),
-            "runs": REG.list_runs()}
+    return {"models": REG.list_models(), "shipped": REG.shipped_models(),
+            "active": REG.active(), "runs": REG.list_runs()}
 
 
 @app.post("/api/suite/models/promote", dependencies=[Depends(require_auth)])
@@ -1469,6 +1526,289 @@ async def s2c_loopback(tid: str, payload: dict | None = None) -> dict:
     BUS.publish({"kind": "s2c.loopback", "subject": tid,
                  "decoded": report.get("decoded", 0)})
     return report
+
+
+# --------------------------------------------------------------------------- #
+# optical channel lab (single-frame physics & demodulator workbench)
+# --------------------------------------------------------------------------- #
+def _jpeg_data_url(img: Any, max_px: int = 840, quality: int = 86) -> str:
+    import cv2
+
+    h, w = img.shape[:2]
+    if max(h, w) > max_px:
+        scale = max_px / max(h, w)
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        return ""
+    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _rectify_quad_preview(img: Any, quad_pts: Any, out_px: int = 320) -> str:
+    import cv2
+    import numpy as np
+
+    src = np.asarray(quad_pts, dtype=np.float32)[:4]
+    dst = np.array([[0, 0], [out_px - 1, 0], [out_px - 1, out_px - 1], [0, out_px - 1]],
+                   dtype=np.float32)
+    mat = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(img, mat, (out_px, out_px), flags=cv2.INTER_LINEAR)
+    return _jpeg_data_url(warped, max_px=out_px, quality=90)
+
+
+def _draw_lab_overlay(img: Any, best: Any, detections: list, gt_quad: Any = None) -> Any:
+    import cv2
+    import numpy as np
+
+    vis = img.copy()
+    names = ["TL", "TR", "BR", "BL"]
+    if gt_quad is not None:
+        gq = np.asarray(gt_quad, np.int32).reshape(-1, 1, 2)
+        cv2.polylines(vis, [gq], True, (235, 200, 40), 1, cv2.LINE_AA)
+    for d in detections:
+        dq = d.quad.pts.astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(vis, [dq], True, (40, 175, 255), 2, cv2.LINE_AA)
+    if best is not None and best.quad is not None:
+        q = np.asarray(best.quad, np.int32)
+        color = (140, 225, 50) if best.ok else (90, 90, 255)
+        cv2.polylines(vis, [q.reshape(-1, 1, 2)], True, color, 2, cv2.LINE_AA)
+        for (x, y), nm in zip(q[:4], names):
+            cv2.circle(vis, (int(x), int(y)), 5, color, -1, cv2.LINE_AA)
+            cv2.circle(vis, (int(x), int(y)), 7, (15, 20, 28), 1, cv2.LINE_AA)
+            cv2.putText(vis, nm, (int(x) + 8, max(16, int(y) - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+    return vis
+
+
+def _run_lab_simulate(payload: dict) -> dict:
+    import numpy as np
+    from ..phy.channel import ChannelConfig, grid_quad_from_frame_quad, rect_quad, simulate
+    from ..phy.render import screen_geometry
+    from ..protocol.packet import Packetizer
+    from ..receiver import HybridReceiver
+    from ..sim import prepare_frame
+
+    modulation = str(payload.get("modulation") or "rgb8")
+    ecc = str(payload.get("ecc") or "rs32")
+    resolution = str(payload.get("resolution") or "1280x720")
+    cells = int(payload["cells"]) if payload.get("cells") else None
+    symbol_px = max(6, min(48, int(payload.get("symbol_px") or 16)))
+    finder = str(payload.get("finder") or "ring")
+    finder_span = str(payload.get("finder_span") or "corners")
+    level = max(0.0, min(1.3, float(payload.get("level", 0.35))))
+    seed = int(payload.get("seed", 42))
+    mode = str(payload.get("mode") or "auto")
+    if mode not in ("auto", "yolo", "classical"):
+        mode = "auto"
+
+    cfg = make_config(modulation, ecc, resolution, cells, symbol_px,
+                      finder=finder, finder_span=finder_span)
+    desc = cfg.describe()
+    text = str(payload.get("text") or "Optical Modem Lab — Photon Frame #01")
+    raw_bytes = text.encode("utf-8")
+    pkt = Packetizer(cfg)
+    frames = list(pkt.frames_for(raw_bytes))
+    if not frames:
+        raise ValueError("text produced no frames")
+    hdr, body = frames[0]
+    tx_img = prepare_frame(cfg, hdr, body)
+
+    rng = np.random.default_rng(seed)
+    if level <= 0.005:
+        cam_img = tx_img.copy()
+        if cfg.display is not None:
+            gx, gy, gw, gh = screen_geometry(cfg)["grid"]
+            gt = np.array([[gx, gy], [gx + gw, gy], [gx + gw, gy + gh], [gx, gy + gh]],
+                          dtype=np.float32)
+        else:
+            fh, fw = tx_img.shape[:2]
+            placed = np.array([[0, 0], [fw, 0], [fw, fh], [0, fh]], dtype=np.float32)
+            gt = grid_quad_from_frame_quad(placed, cfg.frame_px, cfg.cell_px,
+                                           cfg.quiet_zone_cells, cfg.layout.grid)
+    else:
+        ch = ChannelConfig.handheld(rng, level)
+        ch.out_size = 960
+        cam_img, placed = simulate(tx_img, ch, rng)
+        if cfg.display is not None:
+            gt = rect_quad(placed, tx_img.shape[:2], screen_geometry(cfg)["grid"])
+        else:
+            gt = grid_quad_from_frame_quad(placed, cfg.frame_px, cfg.cell_px,
+                                           cfg.quiet_zone_cells, cfg.layout.grid)
+
+    try:
+        rx = HybridReceiver(cfg, mode=mode, yolo_weights=REG.active_weights(), yolo_imgsz=448)
+    except Exception as exc:
+        if mode == "yolo":
+            raise ValueError(str(exc))
+        rx = HybridReceiver(cfg, mode="classical")
+
+    t0 = time.perf_counter()
+    rep = rx.decode(cam_img)
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+    best = rep.best()
+    used_quad = best.quad if (best is not None and best.quad is not None) else (
+        rep.detections[0].quad.pts if rep.detections else None
+    )
+    corner_err_pct = None
+    if used_quad is not None and gt is not None:
+        side = max(1.0, float(np.linalg.norm(gt[0] - gt[1])))
+        corner_err_pct = round(
+            100.0 * float(np.linalg.norm(np.asarray(used_quad)[:4] - gt, axis=1).mean()) / side,
+            2,
+        )
+
+    decoded_text = ""
+    if rep.ok and best is not None and best.payload is not None:
+        # body carries user chunk (with frame packetizer overhead in Packetizer.push)
+        p2 = Packetizer(cfg)
+        from ..protocol.packet import DecodedFrame
+        msg = p2.push(DecodedFrame(header=best.header, payload=best.payload,
+                                   crc_ok=True, fec_ok=True,
+                                   n_corrected=best.n_corrected,
+                                   quality=best.quality))
+        raw_out = msg if msg is not None else best.payload
+        try:
+            decoded_text = raw_out.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded_text = raw_out.hex()
+
+    overlay = _draw_lab_overlay(cam_img, best, rep.detections, gt)
+    rectified = _rectify_quad_preview(cam_img, used_quad) if used_quad is not None else ""
+
+    return {
+        "ok": bool(rep.ok),
+        "payload_matches": bool(rep.ok and best is not None and best.payload == body),
+        "decoded_text": decoded_text,
+        "total_frames_for_text": len(frames),
+        "frame_body_bytes": len(body),
+        "config": desc,
+        "telemetry": {
+            "mode_requested": mode,
+            "yolo_active": rx.yolo is not None,
+            "yolo_note": rx.yolo_error,
+            "detector": best.detector if best is not None else ("yolo26" if rep.detections else "classical"),
+            "detections": len(rep.detections),
+            "ring_score": round(float(best.ring_score), 3) if best is not None else None,
+            "finder_score": (round(float(best.finder_score), 3)
+                             if best is not None and best.finder_score is not None else None),
+            "quality": round(float(best.quality), 3) if best is not None else None,
+            "n_corrected": int(best.n_corrected) if best is not None else 0,
+            "corner_err_pct": corner_err_pct,
+            "elapsed_ms": elapsed_ms,
+            "timings_ms": {k: round(float(v) * 1000, 1) for k, v in rep.timings.items()},
+            "reason": "" if rep.ok else (best.reason if best is not None else "no frame found"),
+        },
+        "tx_preview": _jpeg_data_url(tx_img, max_px=760, quality=90),
+        "cam_overlay": _jpeg_data_url(overlay, max_px=840, quality=88),
+        "rectified": rectified,
+    }
+
+
+def _run_lab_decode(raw: bytes, params: dict) -> dict:
+    import cv2
+    import numpy as np
+    from ..protocol.packet import DecodedFrame, Packetizer
+    from ..receiver import HybridReceiver
+
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("uploaded file is not a readable image")
+
+    modulation = str(params.get("modulation") or "rgb8")
+    ecc = str(params.get("ecc") or "rs32")
+    resolution = str(params.get("resolution") or "1280x720")
+    cells = int(params["cells"]) if params.get("cells") else None
+    symbol_px = max(6, min(48, int(params.get("symbol_px") or 16)))
+    finder = str(params.get("finder") or "none")
+    mode = str(params.get("mode") or "auto")
+    cfg = make_config(modulation, ecc, resolution, cells, symbol_px, finder=finder)
+    try:
+        rx = HybridReceiver(cfg, mode=mode, yolo_weights=REG.active_weights(), yolo_imgsz=448)
+    except Exception as exc:
+        if mode == "yolo":
+            raise ValueError(str(exc))
+        rx = HybridReceiver(cfg, mode="classical")
+
+    t0 = time.perf_counter()
+    rep = rx.decode(img)
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+    best = rep.best()
+    used_quad = best.quad if (best is not None and best.quad is not None) else (
+        rep.detections[0].quad.pts if rep.detections else None
+    )
+    decoded_text = ""
+    decoded_bytes = 0
+    if rep.ok and best is not None and best.payload is not None:
+        p2 = Packetizer(cfg)
+        msg = p2.push(DecodedFrame(header=best.header, payload=best.payload,
+                                   crc_ok=True, fec_ok=True,
+                                   n_corrected=best.n_corrected,
+                                   quality=best.quality))
+        raw_out = msg if msg is not None else best.payload
+        decoded_bytes = len(raw_out)
+        try:
+            decoded_text = raw_out.decode("utf-8")
+        except UnicodeDecodeError:
+            decoded_text = raw_out.hex()
+
+    overlay = _draw_lab_overlay(img, best, rep.detections, None)
+    rectified = _rectify_quad_preview(img, used_quad) if used_quad is not None else ""
+    return {
+        "ok": bool(rep.ok),
+        "decoded_text": decoded_text,
+        "decoded_bytes": decoded_bytes,
+        "image_size": [int(img.shape[1]), int(img.shape[0])],
+        "telemetry": {
+            "mode_requested": mode,
+            "yolo_active": rx.yolo is not None,
+            "detector": best.detector if best is not None else ("yolo26" if rep.detections else "classical"),
+            "detections": len(rep.detections),
+            "ring_score": round(float(best.ring_score), 3) if best is not None else None,
+            "finder_score": (round(float(best.finder_score), 3)
+                             if best is not None and best.finder_score is not None else None),
+            "quality": round(float(best.quality), 3) if best is not None else None,
+            "n_corrected": int(best.n_corrected) if best is not None else 0,
+            "seq": int(best.header.seq) if (best and best.header) else None,
+            "elapsed_ms": elapsed_ms,
+            "reason": "" if rep.ok else (best.reason if best is not None else "no frame found"),
+        },
+        "cam_overlay": _jpeg_data_url(overlay, max_px=840, quality=88),
+        "rectified": rectified,
+    }
+
+
+@app.post("/api/suite/lab/simulate", dependencies=[Depends(require_auth)])
+async def lab_simulate(payload: dict) -> dict:
+    try:
+        return await run_in_threadpool(_run_lab_simulate, payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/suite/lab/decode", dependencies=[Depends(require_auth)])
+async def lab_decode(
+    file: UploadFile = File(...),
+    modulation: str = Form("rgb8"),
+    ecc: str = Form("rs32"),
+    resolution: str = Form("1280x720"),
+    cells: str = Form(""),
+    symbol_px: int = Form(16),
+    finder: str = Form("none"),
+    mode: str = Form("auto"),
+) -> dict:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "upload too large")
+    try:
+        return await run_in_threadpool(_run_lab_decode, raw, {
+            "modulation": modulation, "ecc": ecc, "resolution": resolution,
+            "cells": int(cells) if cells.strip() else None,
+            "symbol_px": symbol_px, "finder": finder, "mode": mode,
+        })
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 # --------------------------------------------------------------------------- #

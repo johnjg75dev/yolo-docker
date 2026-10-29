@@ -134,7 +134,12 @@ def _password_ok(given: str) -> bool:
 
 
 async def require_auth(request: Request) -> None:
-    if not _verify(request.cookies.get(COOKIE_NAME, "")):
+    cand = (
+        request.cookies.get(COOKIE_NAME, "")
+        or request.headers.get("x-om-token", "")
+        or request.query_params.get("_tok", "")
+    )
+    if not _verify(cand):
         log.debug("auth required (no/invalid cookie) path=%s", request.url.path)
         raise HTTPException(401, "login required")
 
@@ -256,7 +261,7 @@ async def login(request: Request, response: Response, payload: dict) -> dict:
     response.set_cookie(COOKIE_NAME, token, max_age=COOKIE_MAX_AGE,
                         httponly=True, samesite="lax",
                         secure=net.cookie_secure(request))
-    return {"ok": True, "password_set": bool(APP_PASSWORD)}
+    return {"ok": True, "password_set": bool(APP_PASSWORD), "token": token}
 
 
 @app.post("/api/logout")

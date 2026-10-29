@@ -64,6 +64,10 @@ def synth_dataset(out: str | Path, n_train: int = 150, n_val: int = 30,
                             seed0=int(seed), workers=workers)
     # synth writes optical_frames.yaml; the suite standardises on data.yaml
     write_yaml(out, sources=[f"synthetic(seed={seed})"])
+    try:
+        (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    except OSError:
+        pass
     return summary
 
 
@@ -78,6 +82,10 @@ def captures_dataset(data_dir: str | Path, out: str | Path,
                     verified_only=verified_only, min_score=min_score, copy=True)
     if summary.get("written"):
         write_yaml(out, sources=["captures"])
+        try:
+            (out / "summary.json").write_text(json.dumps(summary, indent=1))
+        except OSError:
+            pass
     return summary
 
 
@@ -148,6 +156,10 @@ def merge_datasets(sources: list[str | Path], out: str | Path,
     summary["out"] = str(out)
     summary["bytes"] = sum(f.stat().st_size for f in (out / "images").rglob("*")
                            if f.is_file())
+    try:
+        (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    except OSError:
+        pass
     return summary
 
 

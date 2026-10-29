@@ -130,15 +130,28 @@ class Registry:
                         keypoints = 4
                         classes = max(classes, 1)
                     checked += 1
+        summary_meta: dict = {}
+        skipped_total = 0
+        if (p / "summary.json").is_file():
+            try:
+                summary_meta = json.loads((p / "summary.json").read_text())
+                for sp in ("train", "val", "test"):
+                    if isinstance(summary_meta.get(sp), dict):
+                        skipped_total += int(summary_meta[sp].get("skipped", 0) or 0)
+            except (OSError, json.JSONDecodeError, ValueError):
+                summary_meta = {}
         return {
             "name": p.name,
             "path": str(p),
             "splits": counts,
             "images": sum(c["images"] for c in counts.values()),
+            "labels": sum(c["labels"] for c in counts.values()),
             "bytes": sum(c["bytes"] for c in counts.values()),
             "yaml": str(yaml_path) if yaml_path else None,
             "labels_ok": ok_labels,
             "labels_bad": bad_labels,
+            "skipped": skipped_total,
+            "summary": summary_meta,
             "classes": classes,
             "keypoints": keypoints,
             "modified": max([c.stat().st_mtime for c in p.iterdir()] or [0]) if p.exists() else 0,
@@ -168,25 +181,71 @@ class Registry:
             if not p.is_dir():
                 continue
             best = p / "weights" / "best.pt"
+            last = p / "weights" / "last.pt"
             card = p / "weights" / "model_card.json"
             if not card.exists():
                 card = p / "model_card.json"
+            csv_path = p / "results.csv"
+            completed_epochs = 0
+            csv_best_pose = None
+            csv_best_box = None
+            if csv_path.exists():
+                try:
+                    import csv as _csv
+                    with csv_path.open(newline="") as fh:
+                        rows = list(_csv.DictReader(fh))
+                    completed_epochs = len(rows)
+                    for r in rows:
+                        cleaned = {(k or "").strip(): v for k, v in r.items()}
+                        for col, attr in (("metrics/mAP50-95(P)", "pose"),
+                                          ("metrics/mAP50-95(B)", "box")):
+                            if col in cleaned:
+                                try:
+                                    val = float(cleaned[col])
+                                    if attr == "pose" and (csv_best_pose is None or val > csv_best_pose):
+                                        csv_best_pose = val
+                                    if attr == "box" and (csv_best_box is None or val > csv_best_box):
+                                        csv_best_box = val
+                                except (TypeError, ValueError):
+                                    pass
+                except OSError:
+                    pass
             info: dict[str, Any] = {
                 "name": p.name,
                 "path": str(p),
                 "has_weights": best.exists(),
+                "has_last": last.exists(),
+                "has_eval": (p / "eval.json").exists(),
                 "weights_bytes": best.stat().st_size if best.exists() else 0,
                 "modified": p.stat().st_mtime,
-                "epochs": None,
+                "epoch": completed_epochs or None,
+                "epochs": completed_epochs or None,
+                "status": "done" if best.exists() else ("incomplete" if last.exists() else "pending"),
                 "metrics": {},
+                "mAP": None,
                 "dataset": None,
+                "train_args": {},
                 "promoted": False,
             }
             try:
-                info["metrics"] = json.loads(card.read_text()).get("results", {})
-                info["dataset"] = json.loads(card.read_text()).get("train_args", {}).get("data")
-            except (OSError, json.JSONDecodeError):
+                card_json = json.loads(card.read_text())
+                info["metrics"] = card_json.get("results", {}) or {}
+                targs = card_json.get("train_args", {}) or {}
+                info["train_args"] = targs
+                info["dataset"] = targs.get("data")
+                if targs.get("epochs"):
+                    info["epochs"] = int(targs["epochs"])
+                    if best.exists() and not info["epoch"]:
+                        info["epoch"] = int(targs["epochs"])
+            except (OSError, json.JSONDecodeError, ValueError):
                 pass
+            if csv_best_pose is not None and "pose_map50_95" not in info["metrics"]:
+                info["metrics"]["pose_map50_95"] = csv_best_pose
+            if csv_best_box is not None and "box_map50_95" not in info["metrics"]:
+                info["metrics"]["box_map50_95"] = csv_best_box
+            info["mAP"] = (info["metrics"].get("pose_map50_95")
+                           if info["metrics"].get("pose_map50_95") is not None
+                           else info["metrics"].get("box_map50_95"))
             info["promoted"] = (self.models / p.name / "weights" / "best.pt").exists()
             out.append(info)
         return out
@@ -252,16 +311,28 @@ class Registry:
         return active
 
     def activate(self, name: str) -> dict:
-        """Make an already-registered model the active one."""
+        """Make an already-registered (or shipped) model the active one."""
         best = self.models / name / "weights" / "best.pt"
+        card_path = self.models / name / "model_card.json"
+        shipped = False
+        if not best.exists():
+            ship_dir = self.project_root / "models" / name
+            cand = ship_dir / "weights" / "best.pt"
+            if cand.exists():
+                best = cand
+                card_path = (ship_dir / "weights" / "model_card.json"
+                             if (ship_dir / "weights" / "model_card.json").exists()
+                             else ship_dir / "model_card.json")
+                shipped = True
         if not best.exists():
             raise FileNotFoundError(f"model {name} has no weights")
         card = {}
         try:
-            card = json.loads((self.models / name / "model_card.json").read_text())
+            card = json.loads(card_path.read_text())
         except (OSError, json.JSONDecodeError):
             pass
         active = {"name": name, "weights": str(best), "promoted": time.time(),
+                  "shipped": shipped,
                   "run": (card.get("promoted") or {}).get("from_run"),
                   "metrics": card.get("results", {})}
         tmp = self.models / "active.tmp"
@@ -269,6 +340,40 @@ class Registry:
         tmp.replace(self.models / "active.json")
         self.set_state(active_model=name)
         return active
+
+    def shipped_models(self) -> list[dict]:
+        """Models shipped inside the repository/image (read-only baselines)."""
+        active = self.active() or {}
+        out = []
+        ship_root = self.project_root / "models"
+        if not ship_root.is_dir():
+            return out
+        for p in sorted(ship_root.iterdir()):
+            if not p.is_dir():
+                continue
+            best = p / "weights" / "best.pt"
+            if not best.exists():
+                continue
+            card_data: dict = {}
+            for cp in (p / "weights" / "model_card.json", p / "model_card.json"):
+                if cp.exists():
+                    try:
+                        card_data = json.loads(cp.read_text())
+                        break
+                    except (OSError, json.JSONDecodeError):
+                        pass
+            out.append({
+                "name": p.name,
+                "weights": str(best),
+                "has_weights": True,
+                "shipped": True,
+                "bytes": best.stat().st_size,
+                "card": card_data,
+                "metrics": card_data.get("results", {}),
+                "active": active.get("name") == p.name and bool(active.get("shipped", True)),
+                "modified": best.stat().st_mtime,
+            })
+        return out
 
     def active(self) -> dict | None:
         """The model the S2C receiver should use, or ``None``."""
