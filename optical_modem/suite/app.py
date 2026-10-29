@@ -64,6 +64,7 @@ from ..capture.app import MAX_UPLOAD_BYTES, require_auth  # noqa: F401  (re-expo
 from . import datasets as dsets
 from . import crop as dataset_crop
 from . import curate as dataset_curate
+from . import paths as pmod
 from . import quality as dataset_quality
 from . import progress as progress_mod
 from .bus import get_bus
@@ -267,9 +268,17 @@ def _python_argv() -> list[str]:
 
 
 def _safe_name(name: str) -> str:
-    if not isinstance(name, str) or not name or len(name) > 120 or name.startswith(".") or Path(name).name != name or "\\" in name or any(ord(c) < 32 for c in name):
-        raise HTTPException(400, "Invalid dataset or run name")
-    return name
+    """One path component: no traversal, no separators, no control characters.
+
+    This used to be one of four slightly different copies of the same rule
+    (here, crop.paths, curate, and the image endpoints). They disagreed on
+    length limits and on whether a leading dot was allowed, so "which names are
+    safe" depended on which endpoint you happened to call.
+    """
+    try:
+        return pmod.safe_component(name)
+    except pmod.UnsafePath as exc:
+        raise HTTPException(400, f"Invalid dataset or run name: {exc}") from exc
 
 
 def _split(split: str) -> str:
@@ -280,9 +289,10 @@ def _split(split: str) -> str:
 
 def _dataset_path(name: str) -> Path:
     _safe_name(name)
-    p = REG.dataset_dir(name)
-    if p.is_symlink() or not p.resolve().is_relative_to(REG.datasets.resolve()):
-        raise HTTPException(400, "Invalid dataset path")
+    try:
+        p = pmod.dataset_root(REG, name)
+    except pmod.UnsafePath as exc:
+        raise HTTPException(400, f"Invalid dataset path: {exc}") from exc
     if not p.is_dir():
         raise HTTPException(404, f"no dataset {name}")
     return p

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from . import paths as pmod
+
 
 def curated_copy(source: Path, destination: Path, selected: dict, yaml_path: Path):
     if destination.exists():
@@ -16,14 +18,19 @@ def curated_copy(source: Path, destination: Path, selected: dict, yaml_path: Pat
         if not isinstance(names, list):
             raise ValueError('Invalid image selection')
         for name in names:
-            if not isinstance(name, str) or Path(name).name != name or Path(name).suffix.lower() not in ('.jpg', '.jpeg', '.png', '.bmp', '.webp'):
-                raise ValueError('Invalid image name')
-            image = source / 'images' / split / name
-            if not image.is_file() or not image.resolve().is_relative_to(source.resolve()):
+            # same containment rule as everywhere else, via the one
+            # implementation: this copy used to allow any suffix the others
+            # rejected and to check only the image for symlinks
+            try:
+                image = pmod.resolve_within(source, 'images', split,
+                                            pmod.safe_image_name(name))
+                label = pmod.resolve_within(source, 'labels', split,
+                                            Path(name).stem + '.txt',
+                                            must_exist=False)
+            except pmod.UnsafePath as exc:
+                raise ValueError(f'Invalid image selection: {exc}') from exc
+            if not image.is_file():
                 raise ValueError(f'Image not found: {name}')
-            label = source / 'labels' / split / (Path(name).stem + '.txt')
-            if label.is_symlink() or not label.resolve().is_relative_to(source.resolve()):
-                raise ValueError('Symbolic link labels are not supported')
             files.append((split, image, label))
     if not files:
         raise ValueError('Select at least one image')

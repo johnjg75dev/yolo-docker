@@ -468,23 +468,43 @@ async def frame_png(sid: str, index: int | None = None) -> Response:
     })
 
 
+#: Serialises the final "is this still the current frame?" check against
+#: STORE.add_shot. Two phones can tap at once, and an upload takes seconds --
+#: long enough for the session to advance underneath it.
+_SHOT_LOCKS: dict[str, threading.Lock] = {}
+_SHOT_LOCKS_GUARD = threading.Lock()
+
+
+def _shot_lock(sid: str) -> threading.Lock:
+    with _SHOT_LOCKS_GUARD:
+        lock = _SHOT_LOCKS.get(sid)
+        if lock is None:
+            lock = _SHOT_LOCKS[sid] = threading.Lock()
+        return lock
+
+
 @app.post("/api/sessions/{sid}/shots", dependencies=[Depends(require_auth)])
 async def upload_shot(sid: str, file: UploadFile, index: int = Form(...),
                       device: str = Form(""), via: str = Form(""),
                       width: int = Form(0), height: int = Form(0),
                       ) -> dict:
     sess = require_session(sid)
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(400, "empty upload")
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, f"over {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+    # Check BEFORE reading the body. A phone photo is megabytes over a mobile
+    # connection, so validating afterwards meant a duplicate tap paid for the
+    # whole upload -- and for autolabel, ~1.4 s of classical CV -- before being
+    # told 409. Cheap rejection first.
     if not 0 <= index < sess.count:
         raise HTTPException(400, "index out of range")
     if index != sess.index:
         # double tap, or a slow upload racing another device: refuse instead of
         # filing the photo against a frame that is no longer on screen
         raise HTTPException(409, f"expected index {sess.index}")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "empty upload")
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"over {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
 
     img = await run_in_threadpool(_decode_upload, raw)
     spec = sess.spec(index)
@@ -497,7 +517,13 @@ async def upload_shot(sid: str, file: UploadFile, index: int = Form(...),
         "height": int(height) or int(img.shape[0]),
         "label": label, "session": sid,
     }
-    record = await run_in_threadpool(STORE.add_shot, sess, index, raw, meta, "jpg")
+    # Re-check under the lock: the early test above was seconds ago, and the
+    # session may have advanced while this upload was in flight. Without this
+    # the photo is filed against a frame that is no longer on screen.
+    with _shot_lock(sid):
+        if index != sess.index:
+            raise HTTPException(409, f"expected index {sess.index}")
+        record = await run_in_threadpool(STORE.add_shot, sess, index, raw, meta, "jpg")
     return {"ok": True, "shot": {k: v for k, v in record.items() if k != "spec"},
             "state": sess.snapshot(role="camera")}
 

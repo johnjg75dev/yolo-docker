@@ -334,3 +334,46 @@ def test_captures_to_dataset_writes_yolo_pose_labels(tmp_path):
     yaml_text = (tmp_path / "ds" / "data.yaml").read_text()
     assert "kpt_shape: [4, 3]" in yaml_text and "flip_idx: [1, 0, 3, 2]" in yaml_text
     assert (tmp_path / "ds" / "manifest_captures.json").exists()
+
+
+def test_stale_shot_is_rejected_before_the_upload_is_decoded(client):
+    """A duplicate tap must be refused cheaply, not after the expensive work.
+
+    The index check used to run *after* ``file.read()`` and the autolabel pass,
+    so a stale upload paid for a multi-megabyte body and ~1.4 s of classical CV
+    before being told 409. It also left a wide window: two phones could both
+    pass the check and file photos against a frame that was no longer current.
+
+    The probe is deliberately invalid image data. If the index test happens
+    first we get 409; if decoding happens first we get 400. So this asserts the
+    ordering, not just the status code.
+    """
+    client.post("/api/login", json={"password": "hunter2"})
+    snap = client.post("/api/sessions", json={"count": 3,
+                                              "resolution": "1280x720"}).json()
+    sid = snap["id"]
+    assert snap["index"] == 0
+
+    # not a JPEG at all -- would be a 400 if it were ever decoded
+    garbage = b"this is not a jpeg, not even close"
+
+    stale = client.post(f"/api/sessions/{sid}/shots",
+                        files={"file": ("shot.jpg", garbage, "image/jpeg")},
+                        data={"index": "2"})
+    assert stale.status_code == 409, (
+        f"stale index returned {stale.status_code}; the index must be checked "
+        f"before the body is read and decoded")
+
+    out_of_range = client.post(f"/api/sessions/{sid}/shots",
+                               files={"file": ("shot.jpg", garbage, "image/jpeg")},
+                               data={"index": "99"})
+    assert out_of_range.status_code == 400, "out-of-range index must be a 400"
+
+    # the current index still gets as far as decoding, and 400s on the bad data
+    current = client.post(f"/api/sessions/{sid}/shots",
+                          files={"file": ("shot.jpg", garbage, "image/jpeg")},
+                          data={"index": "0"})
+    assert current.status_code == 400, "valid index should reach the decoder"
+
+    # and nothing advanced: no shot was filed by any of the rejected uploads
+    assert client.get(f"/api/sessions/{sid}").json()["index"] == 0

@@ -5,7 +5,8 @@ camera reads them, and the receiver reconstructs the bytes. Stack: packetizer
 → CRC16 → FEC (Reed-Solomon / LDPC) → grid → screen → channel simulation →
 localisation (YOLO26-pose detector or classical contours) → alignment → colour
 calibration → LLR demodulation → FEC decode → CRC verify. Runs as one FastAPI
-suite (uvicorn, one worker) plus optional Postgres 16 + Redis 7 via
+suite (uvicorn, one worker -- or workers in separate containers) plus optional
+Postgres 16 + Redis 7 via
 `docker-compose.yml`; degrades to SQLite + in-process bus without them.
 
 ## Dev environment
@@ -29,7 +30,7 @@ export TRUST_PROXY=1                # `1` behind Coolify/Traefik; `0` if bare
 
 ```bash
 make install          # pip install -r requirements.txt
-make test             # python -m pytest -q        (207 tests, ~100 s on 2 cores)
+make test             # python -m pytest -q        (333 tests, ~85 s on 2 cores)
 make info             # python -m optical_modem info
 make render           # python -m optical_modem render --text "hello optical modem" --out frame.png
 make sim              # python -m optical_modem sim --level 0.6 --n 10   (TX→camera→RX)
@@ -55,10 +56,15 @@ take `--modulation` (default `rgb8`) and `--ecc` (default `rs16`).
 
 ## Conventions (observed, not assumed)
 
-* **One uvicorn worker only.** Sessions, transfers and the job registry live
-  in process (`suite/app.py`, `suite/jobs.py`). Two workers → a phone joins a
-  session the display cannot see, and `404` on
-  `/api/suite/s2c/<id>/frame.png`.
+* **One uvicorn worker only.** Sessions and transfers live in process
+  (`suite/app.py`, `suite/s2c.py`). Two workers → a phone joins a session the
+  display cannot see, and `404` on `/api/suite/s2c/<id>/frame.png`.
+
+  *Jobs* are the exception: with `SUITE_RUN_JOBS=worker` long jobs run in
+  separate `worker` containers (`--profile worker`), claiming each job through
+  the database so no two workers run the same one. The uvicorn process then
+  only enqueues. Sessions, transfers and SSE are still process-local, so the
+  *web* service stays at one replica regardless.
 * **`DATA_DIR` must be set** outside Docker (the capture app raises
   `PermissionError: /data` otherwise). State layout:
   `datasets/<name>/`, `runs/<name>/`, `models/<name>/`, `jobs/<id>/`,
@@ -93,7 +99,8 @@ optical_modem/
   capture/         capture station (display + camera PWA)
   gui/             standalone web GUI
   cli.py           argparse entry (python -m optical_modem)
-tests/             207 unit tests (phy, protocol, receiver, finder, store, bus, net, transfer, synth)
+tests/             333 unit tests (phy, protocol, receiver, finder, store, bus, net,
+                    transfer, synth, jobs/queue, paths, ratelimit)
 scripts/           suite_smoke, evaluate, captures_to_dataset, run_benchmarks, check_https, ui_preview
 docs/              PROTOCOL, MODEL, BENCHMARKS, CAPTURE_APP, SUITE_HANDOFF (read this first when handed the repo)
 models/yolo26n-pose.pt   bundled CPU detector (~7.9 MB)

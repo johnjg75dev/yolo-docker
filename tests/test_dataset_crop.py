@@ -100,7 +100,10 @@ def test_reject_parent_symlink_escape(tmp_path):
     outside = tmp_path / 'outside'
     (outside / 'train').mkdir(parents=True)
     (root / 'images').symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match='within'):
+    # Rejected by name, at the symlinked *component*: the previous check only
+    # noticed after resolving the whole path, so it reported a containment
+    # failure that pointed at the leaf instead of the actual cause.
+    with pytest.raises(ValueError, match='symbolic link'):
         crop.paths(root, 'train', 'image.jpg')
     with pytest.raises(ValueError):
         crop.paths(root, 'train', '..')
